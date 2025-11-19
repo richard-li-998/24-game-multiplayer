@@ -937,6 +937,60 @@ function TwentyFourGame() {
               </div>
             </div>
 
+            {/* Ready Up Section - Between Player Cards and Game Board */}
+            {(winner || clockTimer === 0) && (
+              <div className="p-6 bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl border-2 border-orange-300 shadow-lg">
+                <div className="text-center">
+                  <div className="text-xl font-bold text-orange-800 mb-4">
+                    {clockTimer === 0 
+                      ? "⏰ Time's Up! Game Frozen - Ready Up!" 
+                      : roomData?.clocked 
+                      ? `⏰ Clock Running - ${clockTimer}s remaining` 
+                      : '🏁 Round Complete!'}
+                  </div>
+                  
+                  {/* Ready Status */}
+                  <div className="mb-4">
+                    <p className="text-sm text-gray-600 mb-2">Ready Status:</p>
+                    <div className="flex flex-wrap gap-2 justify-center">
+                      {Object.values(roomData.players || {})
+                        .filter(p => !p.sittingOut)
+                        .map(player => (
+                          <span 
+                            key={player.id}
+                            className={`px-3 py-1 rounded-full text-sm font-semibold ${
+                              player.ready 
+                                ? 'bg-green-100 text-green-700' 
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {player.ready ? '✓' : '○'} {player.name}
+                          </span>
+                        ))
+                      }
+                    </div>
+                  </div>
+                  
+                  {isSittingOut ? (
+                    <div className="text-lg font-semibold text-gray-600">
+                      You're sitting out this round
+                    </div>
+                  ) : myReady || roomData?.players?.[playerId]?.ready ? (
+                    <div className="text-lg font-semibold text-green-600">
+                      ✓ Ready! Waiting for others...
+                    </div>
+                  ) : (
+                    <button
+                      onClick={readyUp}
+                      className="px-8 py-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
+                    >
+                      Ready for Next Round
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Cards Display */}
             <div className="bg-white rounded-2xl shadow-xl p-8">
               {isSittingOut && (
@@ -1045,60 +1099,6 @@ function TwentyFourGame() {
                         {idx + 1}. {move}
                       </div>
                     ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Clock Expired / Ready Up Section */}
-              {(winner || clockTimer === 0) && (
-                <div className="mt-6 p-6 bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl border-2 border-orange-300">
-                  <div className="text-center">
-                    <div className="text-xl font-bold text-orange-800 mb-4">
-                      {clockTimer === 0 
-                        ? "⏰ Time's Up! Game Frozen - Ready Up!" 
-                        : roomData?.clocked 
-                        ? `⏰ Clock Running - ${clockTimer}s remaining` 
-                        : '🏁 Round Complete!'}
-                    </div>
-                    
-                    {/* Ready Status */}
-                    <div className="mb-4">
-                      <p className="text-sm text-gray-600 mb-2">Ready Status:</p>
-                      <div className="flex flex-wrap gap-2 justify-center">
-                        {Object.values(roomData.players || {})
-                          .filter(p => !p.sittingOut)
-                          .map(player => (
-                            <span 
-                              key={player.id}
-                              className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                                player.ready 
-                                  ? 'bg-green-100 text-green-700' 
-                                  : 'bg-gray-100 text-gray-600'
-                              }`}
-                            >
-                              {player.ready ? '✓' : '○'} {player.name}
-                            </span>
-                          ))
-                        }
-                      </div>
-                    </div>
-                    
-                    {isSittingOut ? (
-                      <div className="text-lg font-semibold text-gray-600">
-                        You're sitting out this round
-                      </div>
-                    ) : myReady || roomData?.players?.[playerId]?.ready ? (
-                      <div className="text-lg font-semibold text-green-600">
-                        ✓ Ready! Waiting for others...
-                      </div>
-                    ) : (
-                      <button
-                        onClick={readyUp}
-                        className="px-8 py-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
-                      >
-                        Ready for Next Round
-                      </button>
-                    )}
                   </div>
                 </div>
               )}
