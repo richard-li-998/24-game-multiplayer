@@ -148,6 +148,7 @@ function PlayingCard({ card, isSelected, onClick, disabled }) {
 }
 
 function TwentyFourGame() {
+  const [gameMode, setGameMode] = useState(null); // 'single' or 'multi'
   const [gameState, setGameState] = useState('setup');
   const [roomId, setRoomId] = useState(null);
   const [playerId, setPlayerId] = useState(null);
@@ -169,6 +170,10 @@ function TwentyFourGame() {
   const [iWon, setIWon] = useState(false);
   const [myReady, setMyReady] = useState(false);
   const [isSittingOut, setIsSittingOut] = useState(false);
+  
+  // Single player specific states
+  const [singlePlayerScore, setSinglePlayerScore] = useState(0);
+  const [singlePlayerBestTime, setSinglePlayerBestTime] = useState(null);
 
   useEffect(() => {
     document.title = '24';
@@ -185,6 +190,7 @@ function TwentyFourGame() {
     if (roomFromUrl) {
       setJoinRoomId(roomFromUrl);
       setGameState('join');
+      setGameMode('multi');
     }
 
     // Generate player ID
@@ -194,13 +200,13 @@ function TwentyFourGame() {
 
   useEffect(() => {
     let interval;
-    if (gameState === 'playing' && roomData?.gameStarted && !winner) {
+    if (gameMode === 'multi' && gameState === 'playing' && roomData?.gameStarted && !winner) {
       interval = setInterval(() => {
         setTimer(t => t + 1);
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [gameState, roomData, winner]);
+  }, [gameMode, gameState, roomData, winner]);
 
   // Clock countdown timer
   useEffect(() => {
@@ -226,7 +232,7 @@ function TwentyFourGame() {
 
   // Listen to room updates
   useEffect(() => {
-    if (roomId) {
+    if (roomId && gameMode === 'multi') {
       const roomRef = ref(database, `rooms/${roomId}`);
       const unsubscribe = onValue(roomRef, (snapshot) => {
         const data = snapshot.val();
@@ -294,7 +300,7 @@ function TwentyFourGame() {
 
       return () => unsubscribe();
     }
-  }, [roomId, gameState, playerId, cards.length, winner, iWon, isSittingOut, myReady, clockTimer]);
+  }, [roomId, gameMode, gameState, playerId, cards.length, winner, iWon, isSittingOut, myReady, clockTimer]);
 
   // Auto-check if all players are ready when roomData changes
   useEffect(() => {
@@ -303,12 +309,69 @@ function TwentyFourGame() {
     }
   }, [roomData?.players, winner]);
 
+  // Single player timer effect
+  useEffect(() => {
+    let interval;
+    if (gameMode === 'single' && gameState === 'playing' && !winner) {
+      interval = setInterval(() => {
+        setTimer(t => t + 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [gameMode, gameState, winner]);
+
+  // Single player game functions
+  const startSinglePlayerGame = () => {
+    const newCards = generateCards();
+    setCards(newCards);
+    setOriginalCards(newCards);
+    setMoveHistory([]);
+    setCardHistory([]);
+    setSelectedCard(null);
+    setSelectedOperation(null);
+    setWinner(null);
+    setTimer(0);
+    setMessage('');
+    setGameState('playing');
+  };
+
+  const nextRoundSinglePlayer = () => {
+    const newCards = generateCards();
+    setCards(newCards);
+    setOriginalCards(newCards);
+    setMoveHistory([]);
+    setCardHistory([]);
+    setSelectedCard(null);
+    setSelectedOperation(null);
+    setWinner(null);
+    setIWon(false);
+    setTimer(0);
+    setMessage('');
+  };
+
+  const backToMenu = () => {
+    setGameMode(null);
+    setGameState('setup');
+    setCards([]);
+    setOriginalCards([]);
+    setMoveHistory([]);
+    setCardHistory([]);
+    setSelectedCard(null);
+    setSelectedOperation(null);
+    setWinner(null);
+    setTimer(0);
+    setMessage('');
+    setSinglePlayerScore(0);
+    setSinglePlayerBestTime(null);
+  };
+
   const createRoom = async () => {
     if (!playerName.trim()) {
       alert('Please enter your name!');
       return;
     }
 
+    setGameMode('multi');
     const newRoomId = Math.random().toString(36).substr(2, 6).toUpperCase();
     setRoomId(newRoomId);
 
@@ -350,6 +413,7 @@ function TwentyFourGame() {
       return;
     }
 
+    setGameMode('multi');
     const roomRef = ref(database, `rooms/${joinRoomId.toUpperCase()}`);
     
     // Check if room exists
@@ -392,7 +456,8 @@ function TwentyFourGame() {
   };
 
   const handleCardClick = async (card) => {
-    if (gameState !== 'playing' || iWon || clockTimer === 0) return;
+    if (gameState !== 'playing' || iWon) return;
+    if (gameMode === 'multi' && clockTimer === 0) return;
 
     // If clicking the same card that's already selected (and no operation chosen), deselect it
     if (selectedCard?.id === card.id && !selectedOperation) {
@@ -422,7 +487,8 @@ function TwentyFourGame() {
   };
 
   const handleOperationClick = async (op) => {
-    if (iWon || clockTimer === 0) return;
+    if (iWon) return;
+    if (gameMode === 'multi' && clockTimer === 0) return;
     
     if (!selectedCard) {
       setMessage('Please select a card first!');
@@ -519,31 +585,50 @@ function TwentyFourGame() {
     if (newCards.length === 1) {
       const finalValue = newCards[0].value || CARD_VALUES[newCards[0].rank] || parseFloat(newCards[0].rank);
       if (Math.abs(finalValue - 24) < EPSILON) {
-        // Try to claim victory
-        const roomRef = ref(database, `rooms/${roomId}`);
-        
-        // Check if someone already won
-        if (!winner) {
-          const newScore = (roomData.players[playerId]?.score || 0) + 1;
-          
-          await update(roomRef, {
-            winner: playerId,
-            winTime: Date.now(),
-            [`players/${playerId}/score`]: newScore
-          });
+        if (gameMode === 'single') {
+          // Single player win
+          setWinner(playerId);
           setIWon(true);
-          setMessage('🎉 You won!');
+          setSinglePlayerScore(prev => prev + 1);
+          
+          // Check and update best time
+          if (singlePlayerBestTime === null || timer < singlePlayerBestTime) {
+            setSinglePlayerBestTime(timer);
+            setMessage(`🎉 You won in ${timer}s! New best time!`);
+          } else {
+            setMessage(`🎉 You won in ${timer}s!`);
+          }
         } else {
-          setMessage(`${roomData.players[winner]?.name} already won! But you finished!`);
+          // Multiplayer win
+          const roomRef = ref(database, `rooms/${roomId}`);
+          
+          // Check if someone already won
+          if (!winner) {
+            const newScore = (roomData.players[playerId]?.score || 0) + 1;
+            
+            await update(roomRef, {
+              winner: playerId,
+              winTime: Date.now(),
+              [`players/${playerId}/score`]: newScore
+            });
+            setIWon(true);
+            setMessage('🎉 You won!');
+          } else {
+            setMessage(`${roomData.players[winner]?.name} already won! But you finished!`);
+          }
         }
       } else {
         setMessage(`❌ Final value is ${displayValue}, not 24. Keep trying!`);
       }
     } else {
-      const msg = winner 
-        ? `Result: ${displayValue}. ${roomData.players[winner]?.name} won, but keep going!`
-        : `Result: ${displayValue}. ${newCards.length} cards remaining.`;
-      setMessage(msg);
+      if (gameMode === 'single') {
+        setMessage(`Result: ${displayValue}. ${newCards.length} cards remaining.`);
+      } else {
+        const msg = winner 
+          ? `Result: ${displayValue}. ${roomData.players[winner]?.name} won, but keep going!`
+          : `Result: ${displayValue}. ${newCards.length} cards remaining.`;
+        setMessage(msg);
+      }
     }
   };
 
@@ -556,7 +641,12 @@ function TwentyFourGame() {
     setCardHistory(cardHistory.slice(0, -1));
     setSelectedCard(null);
     setSelectedOperation(null);
-    setMessage(winner ? `${roomData.players[winner]?.name} won! Keep playing to finish.` : 'Last move undone. Continue playing!');
+    
+    if (gameMode === 'single') {
+      setMessage('Last move undone. Continue playing!');
+    } else {
+      setMessage(winner ? `${roomData.players[winner]?.name} won! Keep playing to finish.` : 'Last move undone. Continue playing!');
+    }
   };
 
   const resetBoard = () => {
@@ -565,7 +655,12 @@ function TwentyFourGame() {
     setCardHistory([]);
     setSelectedCard(null);
     setSelectedOperation(null);
-    setMessage(winner ? `${roomData.players[winner]?.name} won! Board reset.` : 'Board reset to original cards.');
+    
+    if (gameMode === 'single') {
+      setMessage('Board reset to original cards.');
+    } else {
+      setMessage(winner ? `${roomData.players[winner]?.name} won! Board reset.` : 'Board reset to original cards.');
+    }
   };
 
   const clockOpponent = async () => {
@@ -687,10 +782,40 @@ function TwentyFourGame() {
       <div className="max-w-4xl mx-auto">
         <div className="text-center mb-8">
           <h1 className="text-6xl font-bold text-gray-800 mb-2">24 Game</h1>
-          <p className="text-gray-600 text-lg">Multiplayer - Combine all cards to make 24!</p>
+          <p className="text-gray-600 text-lg">
+            {gameMode === 'single' ? 'Single Player - Beat your best time!' : gameMode === 'multi' ? 'Multiplayer - Race to 24!' : 'Choose your mode!'}
+          </p>
         </div>
 
-        {gameState === 'setup' && (
+        {/* Mode Selection */}
+        {!gameMode && gameState === 'setup' && (
+          <div className="bg-white rounded-2xl shadow-xl p-12">
+            <h2 className="text-3xl font-bold text-gray-800 mb-8 text-center">Choose Game Mode</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <button
+                onClick={() => {
+                  setGameMode('single');
+                  startSinglePlayerGame();
+                }}
+                className="p-8 bg-gradient-to-br from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white rounded-2xl shadow-lg transform hover:scale-105 transition"
+              >
+                <Trophy className="w-16 h-16 mx-auto mb-4" />
+                <h3 className="text-2xl font-bold mb-2">Single Player</h3>
+                <p className="text-purple-100">Practice alone and beat your best time!</p>
+              </button>
+              <button
+                onClick={() => setGameMode('multi')}
+                className="p-8 bg-gradient-to-br from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white rounded-2xl shadow-lg transform hover:scale-105 transition"
+              >
+                <Users className="w-16 h-16 mx-auto mb-4" />
+                <h3 className="text-2xl font-bold mb-2">Multiplayer</h3>
+                <p className="text-blue-100">Race against friends online!</p>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {gameMode === 'multi' && gameState === 'setup' && (
           <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
             <Users className="w-24 h-24 mx-auto text-blue-600 mb-4" />
             <h2 className="text-3xl font-bold text-gray-800 mb-4">Create or Join Game</h2>
@@ -720,6 +845,12 @@ function TwentyFourGame() {
               </div>
             </div>
             <div className="flex gap-4 justify-center">
+              <button
+                onClick={() => setGameMode(null)}
+                className="bg-gray-500 hover:bg-gray-600 text-white px-6 py-4 rounded-xl text-xl font-bold shadow-lg transition"
+              >
+                ← Back
+              </button>
               <button
                 onClick={createRoom}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
@@ -758,10 +889,13 @@ function TwentyFourGame() {
             </div>
             <div className="flex gap-4 justify-center">
               <button
-                onClick={() => setGameState('setup')}
+                onClick={() => {
+                  setGameState('setup');
+                  setGameMode(null);
+                }}
                 className="bg-gray-500 hover:bg-gray-600 text-white px-8 py-4 rounded-xl text-xl font-bold shadow-lg transition"
               >
-                Back
+                ← Back
               </button>
               <button
                 onClick={joinRoom}
@@ -817,10 +951,182 @@ function TwentyFourGame() {
                 Start Game Now
               </button>
             )}
+            <button
+              onClick={() => {
+                // Delete the room if you're the host, or just leave if you're not
+                if (roomData?.host === playerId) {
+                  const roomRef = ref(database, `rooms/${roomId}`);
+                  set(roomRef, null);
+                }
+                setGameState('setup');
+                setGameMode(null);
+                setRoomId(null);
+                setRoomData(null);
+              }}
+              className="mt-4 bg-gray-500 hover:bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold transition"
+            >
+              ← Cancel / Leave Room
+            </button>
           </div>
         )}
 
-        {(gameState === 'playing' || gameState === 'won') && roomData && (
+        {/* Single Player Mode */}
+        {gameMode === 'single' && gameState === 'playing' && (
+          <div className="space-y-6">
+            {/* Game Info Bar */}
+            <div className="bg-white rounded-xl shadow-lg p-6">
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-6 h-6 text-gray-600" />
+                      <span className="text-2xl font-mono font-bold">{formatTime(timer)}</span>
+                    </div>
+                    <div className="text-left">
+                      <div className="text-sm text-gray-600">Score</div>
+                      <div className="text-2xl font-bold text-purple-600">{singlePlayerScore}</div>
+                    </div>
+                    {singlePlayerBestTime !== null && (
+                      <div className="text-left">
+                        <div className="text-sm text-gray-600">Best Time</div>
+                        <div className="text-lg font-bold text-green-600">{formatTime(singlePlayerBestTime)}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={backToMenu}
+                  className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-semibold transition"
+                >
+                  ← Back to Menu
+                </button>
+              </div>
+            </div>
+
+            {/* Winner Banner */}
+            {winner && (
+              <div className="bg-gradient-to-r from-green-400 to-emerald-500 rounded-2xl shadow-xl p-8">
+                <div className="text-center">
+                  <Trophy className="w-20 h-20 mx-auto mb-4 text-yellow-300 fill-yellow-200" />
+                  <div className="text-3xl font-bold text-white mb-4">
+                    🎉 You Won!
+                  </div>
+                  <div className="text-xl text-green-100 mb-6">
+                    Time: {formatTime(timer)}
+                    {timer === singlePlayerBestTime && ' 🌟 New Record!'}
+                  </div>
+                  <button
+                    onClick={nextRoundSinglePlayer}
+                    className="px-8 py-4 bg-white hover:bg-gray-100 text-green-600 rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
+                  >
+                    Next Round
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Cards Display */}
+            <div className="bg-white rounded-2xl shadow-xl p-8">
+              <h2 className="text-2xl font-bold text-center mb-6 text-gray-800">
+                {cards.length === 4 ? 'Starting Cards' : `${cards.length} Card${cards.length !== 1 ? 's' : ''} Remaining`}
+              </h2>
+              <div className="grid grid-cols-2 gap-6 max-w-md mx-auto mb-8">
+                {cards.map((card) => (
+                  <PlayingCard
+                    key={card.id}
+                    card={card}
+                    isSelected={selectedCard?.id === card.id}
+                    onClick={() => handleCardClick(card)}
+                    disabled={winner}
+                  />
+                ))}
+              </div>
+
+              {/* Operations */}
+              <div className="mb-6">
+                <h3 className="text-xl font-bold text-center mb-4 text-gray-800">
+                  {winner 
+                    ? 'Round Complete!' 
+                    : selectedCard 
+                    ? 'Choose Operation' 
+                    : 'Select a card first'}
+                </h3>
+                <div className="flex gap-4 justify-center mb-4">
+                  {['+', '-', '*', '/'].map(op => (
+                    <button
+                      key={op}
+                      onClick={() => handleOperationClick(op)}
+                      disabled={!selectedCard || winner}
+                      className={`w-16 h-16 bg-orange-500 hover:bg-orange-600 text-white text-3xl font-bold rounded-xl shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-110 transition ${
+                        selectedOperation === op ? 'ring-4 ring-orange-300 scale-110' : ''
+                      }`}
+                    >
+                      {op}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-3 justify-center">
+                  <button
+                    onClick={undoLastMove}
+                    disabled={cardHistory.length === 0 || winner}
+                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm"
+                  >
+                    ↶ Undo
+                  </button>
+                  <button
+                    onClick={resetBoard}
+                    disabled={winner}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm"
+                  >
+                    🔄 Reset
+                  </button>
+                </div>
+              </div>
+
+              {/* Message Display */}
+              {message && (
+                <div className={`text-center text-lg font-semibold p-4 rounded-lg ${
+                  winner
+                    ? 'bg-green-100 text-green-800' 
+                    : message.includes('❌')
+                    ? 'bg-red-100 text-red-800'
+                    : 'bg-blue-100 text-blue-800'
+                }`}>
+                  {message}
+                </div>
+              )}
+
+              {/* Move History */}
+              {moveHistory.length > 0 && (
+                <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+                  <h4 className="font-bold text-gray-700 mb-2">Move History:</h4>
+                  <div className="space-y-1">
+                    {moveHistory.map((move, idx) => (
+                      <div key={idx} className="text-sm text-gray-600 font-mono">
+                        {idx + 1}. {move}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Game Rules */}
+            <div className="bg-white rounded-xl p-6 shadow-lg">
+              <h3 className="font-bold text-lg mb-3 text-gray-800">How to Play:</h3>
+              <ul className="space-y-2 text-gray-700">
+                <li>✓ Use all 4 cards exactly once to make 24</li>
+                <li>✓ Click card → operation → card to combine</li>
+                <li>✓ Selecting a different card/operation auto-switches</li>
+                <li>✓ Use 🔄 Reset to go back to original 4 cards</li>
+                <li>✓ Use ↶ Undo to reverse your last move</li>
+                <li>✓ Try to beat your best time!</li>
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {(gameState === 'playing' || gameState === 'won') && gameMode === 'multi' && roomData && (
           <div className="space-y-6">
             {/* Game Info Bar */}
             <div className="bg-white rounded-xl shadow-lg p-4">
