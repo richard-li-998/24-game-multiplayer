@@ -159,7 +159,7 @@ function TwentyFourGame() {
   const [selectedOperation, setSelectedOperation] = useState(null);
   const [winner, setWinner] = useState(null);
   const [timer, setTimer] = useState(0);
-  const [clockTimer, setClockTimer] = useState(null); // 60 second clock timer
+  const [clockTimer, setClockTimer] = useState(null); // Countdown when clocked
   const [message, setMessage] = useState('');
   const [moveHistory, setMoveHistory] = useState([]); // Local move history
   const [cardHistory, setCardHistory] = useState([]); // Local undo history
@@ -202,16 +202,24 @@ function TwentyFourGame() {
     return () => clearInterval(interval);
   }, [gameState, roomData, winner]);
 
-  // Clock timer countdown
+  // Clock countdown timer
   useEffect(() => {
     let interval;
     if (clockTimer !== null && clockTimer > 0 && !iWon) {
       interval = setInterval(() => {
-        setClockTimer(t => t - 1);
+        setClockTimer(t => {
+          const newTime = t - 1;
+          if (newTime > 0) {
+            setMessage(`⏰ You've been clocked! ${newTime} seconds to finish!`);
+          } else {
+            setMessage("⏰ Time's up! Game frozen - Click Ready to continue.");
+            // Clear selections when game freezes
+            setSelectedCard(null);
+            setSelectedOperation(null);
+          }
+          return newTime;
+        });
       }, 1000);
-    } else if (clockTimer === 0 && !iWon) {
-      // Time's up!
-      setMessage("⏰ Time's up! Round over.");
     }
     return () => clearInterval(interval);
   }, [clockTimer, iWon]);
@@ -244,9 +252,9 @@ function TwentyFourGame() {
               setSelectedCard(null);
               setSelectedOperation(null);
               setIWon(false);
-              setMyReady(false);
+              setMyReady(false); // Reset ready status
               setWinner(null);
-              setClockTimer(null);
+              setClockTimer(null); // Reset clock timer for new round
             }
           }
           
@@ -262,10 +270,18 @@ function TwentyFourGame() {
             }
           }
           
-          // Check if clocked (auto-ready non-winners)
-          if (data.clocked && !iWon && !isSittingOut && !myReady) {
-            setMyReady(true);
-            setMessage(`⏰ Round clocked! Moving to next round...`);
+          // Show clock message if clocked and start countdown
+          if (data.clocked && !iWon && !isSittingOut && clockTimer === null) {
+            setClockTimer(60);
+          }
+          
+          // Update message based on clock timer
+          if (clockTimer !== null && !iWon && !isSittingOut) {
+            if (clockTimer > 0) {
+              setMessage(`⏰ You've been clocked! ${clockTimer} seconds to finish!`);
+            } else {
+              setMessage(`⏰ Time's up! Click Ready to continue.`);
+            }
           }
           
           if (data.gameStarted && gameState !== 'playing' && !winner) {
@@ -276,7 +292,14 @@ function TwentyFourGame() {
 
       return () => unsubscribe();
     }
-  }, [roomId, gameState, playerId, cards.length, winner, iWon, clockTimer, isSittingOut, myReady]);
+  }, [roomId, gameState, playerId, cards.length, winner, iWon, isSittingOut, myReady, clockTimer]);
+
+  // Auto-check if all players are ready when roomData changes
+  useEffect(() => {
+    if (roomData && winner && roomData.players) {
+      checkAndStartNextRound();
+    }
+  }, [roomData?.players, winner]);
 
   const createRoom = async () => {
     if (!playerName.trim()) {
@@ -367,7 +390,7 @@ function TwentyFourGame() {
   };
 
   const handleCardClick = async (card) => {
-    if (gameState !== 'playing' || iWon) return;
+    if (gameState !== 'playing' || iWon || clockTimer === 0) return;
 
     // If clicking the same card that's already selected (and no operation chosen), deselect it
     if (selectedCard?.id === card.id && !selectedOperation) {
@@ -397,7 +420,7 @@ function TwentyFourGame() {
   };
 
   const handleOperationClick = async (op) => {
-    if (iWon) return;
+    if (iWon || clockTimer === 0) return;
     
     if (!selectedCard) {
       setMessage('Please select a card first!');
@@ -547,20 +570,11 @@ function TwentyFourGame() {
     if (!iWon || !roomData) return;
     
     const roomRef = ref(database, `rooms/${roomId}`);
-    
-    // Mark all non-winning, non-sitting-out players as ready
-    const updates = { clocked: true };
-    Object.keys(roomData.players).forEach(pid => {
-      if (pid !== playerId && !roomData.players[pid].sittingOut) {
-        updates[`players/${pid}/ready`] = true;
-      }
+    await update(roomRef, {
+      clocked: true
     });
     
-    await update(roomRef, updates);
-    setMessage('⏰ All players clocked! Preparing next round...');
-    
-    // Check if all active players are ready, if so start next round
-    setTimeout(() => checkAndStartNextRound(), 1000);
+    setMessage('⏰ All players clocked!');
   };
 
   const kickPlayer = async (targetPlayerId) => {
@@ -601,35 +615,51 @@ function TwentyFourGame() {
   };
 
   const checkAndStartNextRound = async () => {
-    if (!roomData) return;
+    if (!roomData || !roomData.players) return;
     
     const activePlayers = Object.values(roomData.players).filter(p => !p.sittingOut);
-    const allReady = activePlayers.every(p => p.ready);
+    const activePlayerCount = activePlayers.length;
+    const readyCount = activePlayers.filter(p => p.ready).length;
     
-    if (allReady && activePlayers.length > 0) {
-      const newCards = generateCards();
-      const newRoundNumber = (roomData.roundNumber || 1) + 1;
-      const roomRef = ref(database, `rooms/${roomId}`);
+    console.log(`Ready check: ${readyCount}/${activePlayerCount} players ready`);
+    
+    if (readyCount === activePlayerCount && activePlayerCount > 0) {
+      console.log('All players ready!');
       
-      // Reset all players' ready status
-      const updates = {
-        originalCards: newCards,
-        winner: null,
-        clocked: false,
-        roundNumber: newRoundNumber
-      };
+      // Only the host should generate new cards
+      const isHost = roomData.host === playerId;
       
-      Object.keys(roomData.players).forEach(pid => {
-        updates[`players/${pid}/ready`] = false;
-      });
-      
-      await update(roomRef, updates);
+      if (isHost) {
+        console.log('I am host - generating new cards and starting new round...');
+        
+        const newCards = generateCards();
+        const newRoundNumber = (roomData.roundNumber || 1) + 1;
+        const roomRef = ref(database, `rooms/${roomId}`);
+        
+        // Reset all players' ready status and game state
+        const updates = {
+          originalCards: newCards,
+          winner: null,
+          clocked: false,
+          roundNumber: newRoundNumber
+        };
+        
+        Object.keys(roomData.players).forEach(pid => {
+          updates[`players/${pid}/ready`] = false;
+        });
+        
+        await update(roomRef, updates);
+        console.log('New round started!');
+      } else {
+        console.log('Waiting for host to start new round...');
+      }
     }
   };
 
   const readyUp = async () => {
     if (!roomId || !roomData || isSittingOut) return;
     
+    console.log('Ready up clicked!');
     setMyReady(true);
     const roomRef = ref(database, `rooms/${roomId}`);
     
@@ -637,10 +667,11 @@ function TwentyFourGame() {
       [`players/${playerId}/ready`]: true
     });
     
+    console.log('Ready status updated in Firebase');
     setMessage('Ready! Waiting for other players...');
     
-    // Check if all active players are ready
-    setTimeout(() => checkAndStartNextRound(), 500);
+    // Check if all active players are ready after a short delay to let Firebase sync
+    setTimeout(() => checkAndStartNextRound(), 800);
   };
 
   const formatTime = (seconds) => {
@@ -797,6 +828,19 @@ function TwentyFourGame() {
                     <Clock className="w-5 h-5 text-gray-600" />
                     <span className="text-xl font-mono font-bold">{formatTime(timer)}</span>
                   </div>
+                  {clockTimer !== null && !iWon && (
+                    <div className={`flex items-center gap-2 px-4 py-1.5 rounded-lg border-2 ${
+                      clockTimer <= 10 
+                        ? 'bg-red-200 border-red-500 animate-pulse' 
+                        : 'bg-red-100 border-red-400'
+                    }`}>
+                      <span className={`font-bold text-xl ${
+                        clockTimer <= 10 ? 'text-red-700' : 'text-red-600'
+                      }`}>
+                        ⏰ {clockTimer}s
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="text-center">
                   <div className="text-sm text-gray-600">Room Code</div>
@@ -901,6 +945,13 @@ function TwentyFourGame() {
                 </div>
               )}
               
+              {clockTimer === 0 && !iWon && (
+                <div className="mb-6 p-4 bg-red-100 border-2 border-red-500 rounded-lg text-center">
+                  <p className="text-red-800 font-bold text-lg">🔒 Time's Up - Game Frozen!</p>
+                  <p className="text-red-700 text-sm mt-1">Click "Ready for Next Round" below to continue</p>
+                </div>
+              )}
+              
               <h2 className="text-2xl font-bold text-center mb-6 text-gray-800">
                 {cards.length === 4 ? 'Starting Cards' : `${cards.length} Card${cards.length !== 1 ? 's' : ''} Remaining`}
               </h2>
@@ -911,7 +962,7 @@ function TwentyFourGame() {
                     card={card}
                     isSelected={selectedCard?.id === card.id}
                     onClick={() => handleCardClick(card)}
-                    disabled={iWon || isSittingOut}
+                    disabled={iWon || isSittingOut || clockTimer === 0}
                   />
                 ))}
               </div>
@@ -919,14 +970,24 @@ function TwentyFourGame() {
               {/* Operations */}
               <div className="mb-6">
                 <h3 className="text-xl font-bold text-center mb-4 text-gray-800">
-                  {isSittingOut ? 'Sitting Out' : iWon ? 'You already won!' : winner ? `${roomData.players[winner]?.name} won! Keep playing to finish.` : selectedCard ? 'Choose Operation' : 'Select a card first'}
+                  {clockTimer === 0
+                    ? '🔒 Game Frozen - Ready Up to Continue!' 
+                    : isSittingOut 
+                    ? 'Sitting Out' 
+                    : iWon 
+                    ? 'You already won!' 
+                    : winner 
+                    ? `${roomData.players[winner]?.name} won! Keep playing to finish.` 
+                    : selectedCard 
+                    ? 'Choose Operation' 
+                    : 'Select a card first'}
                 </h3>
                 <div className="flex gap-4 justify-center mb-4">
                   {['+', '-', '*', '/'].map(op => (
                     <button
                       key={op}
                       onClick={() => handleOperationClick(op)}
-                      disabled={!selectedCard || iWon || isSittingOut}
+                      disabled={!selectedCard || iWon || isSittingOut || clockTimer === 0}
                       className={`w-16 h-16 bg-orange-500 hover:bg-orange-600 text-white text-3xl font-bold rounded-xl shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-110 transition ${
                         selectedOperation === op ? 'ring-4 ring-orange-300 scale-110' : ''
                       }`}
@@ -938,14 +999,14 @@ function TwentyFourGame() {
                 <div className="flex gap-3 justify-center">
                   <button
                     onClick={undoLastMove}
-                    disabled={cardHistory.length === 0 || iWon || isSittingOut}
+                    disabled={cardHistory.length === 0 || iWon || isSittingOut || clockTimer === 0}
                     className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm"
                   >
                     ↶ Undo
                   </button>
                   <button
                     onClick={resetBoard}
-                    disabled={iWon || isSittingOut}
+                    disabled={iWon || isSittingOut || clockTimer === 0}
                     className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm"
                   >
                     🔄 Reset
@@ -989,11 +1050,15 @@ function TwentyFourGame() {
               )}
 
               {/* Clock Expired / Ready Up Section */}
-              {winner && (
+              {(winner || clockTimer === 0) && (
                 <div className="mt-6 p-6 bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl border-2 border-orange-300">
                   <div className="text-center">
                     <div className="text-xl font-bold text-orange-800 mb-4">
-                      {roomData?.clocked ? '⏰ Round Clocked!' : '🏁 Round Complete!'}
+                      {clockTimer === 0 
+                        ? "⏰ Time's Up! Game Frozen - Ready Up!" 
+                        : roomData?.clocked 
+                        ? `⏰ Clock Running - ${clockTimer}s remaining` 
+                        : '🏁 Round Complete!'}
                     </div>
                     
                     {/* Ready Status */}
@@ -1022,8 +1087,8 @@ function TwentyFourGame() {
                       <div className="text-lg font-semibold text-gray-600">
                         You're sitting out this round
                       </div>
-                    ) : myReady ? (
-                      <div className="text-lg font-semibold text-gray-600">
+                    ) : myReady || roomData?.players?.[playerId]?.ready ? (
+                      <div className="text-lg font-semibold text-green-600">
                         ✓ Ready! Waiting for others...
                       </div>
                     ) : (
@@ -1050,7 +1115,9 @@ function TwentyFourGame() {
                 <li>✓ Use 🔄 Reset to go back to original 4 cards</li>
                 <li>✓ Use ↶ Undo to reverse your last move</li>
                 <li>✓ First player to make 24 wins the round and gets +1 score!</li>
-                <li>✓ Winner can ⏰ Clock all players to auto-ready them</li>
+                <li>✓ Winner can ⏰ Clock all players (starts 60-second countdown)</li>
+                <li>✓ Keep playing during countdown - race to finish!</li>
+                <li>✓ When timer hits 0, game freezes and you must ready up</li>
                 <li>✓ Use ⏸️ Sit Out to take a break (keeps your score)</li>
                 <li>✓ Host can kick AFK players</li>
                 <li>✓ Players can join anytime (up to room limit)</li>
