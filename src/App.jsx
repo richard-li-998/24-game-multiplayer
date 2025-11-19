@@ -205,13 +205,13 @@ function TwentyFourGame() {
   // Clock countdown timer
   useEffect(() => {
     let interval;
-    if (clockTimer !== null && clockTimer > 0 && !iWon) {
+    if (clockTimer !== null && clockTimer > 0) {
       interval = setInterval(() => {
         setClockTimer(t => {
           const newTime = t - 1;
-          if (newTime > 0) {
+          if (newTime > 0 && !iWon) {
             setMessage(`⏰ You've been clocked! ${newTime} seconds to finish!`);
-          } else {
+          } else if (newTime === 0 && !iWon) {
             setMessage("⏰ Time's up! Game frozen - Click Ready to continue.");
             // Clear selections when game freezes
             setSelectedCard(null);
@@ -271,16 +271,18 @@ function TwentyFourGame() {
           }
           
           // Show clock message if clocked and start countdown
-          if (data.clocked && !iWon && !isSittingOut && clockTimer === null) {
+          if (data.clocked && !isSittingOut && clockTimer === null) {
             setClockTimer(60);
           }
           
           // Update message based on clock timer
-          if (clockTimer !== null && !iWon && !isSittingOut) {
-            if (clockTimer > 0) {
+          if (clockTimer !== null && !isSittingOut) {
+            if (clockTimer > 0 && !iWon) {
               setMessage(`⏰ You've been clocked! ${clockTimer} seconds to finish!`);
-            } else {
-              setMessage(`⏰ Time's up! Click Ready to continue.`);
+            } else if (clockTimer === 0 && !iWon) {
+              setMessage(`⏰ Time's up! Game frozen - Click Ready to continue.`);
+            } else if (iWon && data.clocked) {
+              setMessage(`⏰ Clock active - waiting for other players to ready up.`);
             }
           }
           
@@ -828,7 +830,7 @@ function TwentyFourGame() {
                     <Clock className="w-5 h-5 text-gray-600" />
                     <span className="text-xl font-mono font-bold">{formatTime(timer)}</span>
                   </div>
-                  {clockTimer !== null && !iWon && (
+                  {clockTimer !== null && clockTimer > 0 && (
                     <div className={`flex items-center gap-2 px-4 py-1.5 rounded-lg border-2 ${
                       clockTimer <= 10 
                         ? 'bg-red-200 border-red-500 animate-pulse' 
@@ -944,7 +946,7 @@ function TwentyFourGame() {
                   <div className="text-xl font-bold text-orange-800 mb-4">
                     {clockTimer === 0 
                       ? "⏰ Time's Up! Game Frozen - Ready Up!" 
-                      : roomData?.clocked 
+                      : (roomData?.clocked && clockTimer !== null && clockTimer > 0)
                       ? `⏰ Clock Running - ${clockTimer}s remaining` 
                       : '🏁 Round Complete!'}
                   </div>
@@ -1072,6 +1074,11 @@ function TwentyFourGame() {
                     >
                       ⏰ Clock All Players
                     </button>
+                  )}
+                  {iWon && roomData?.clocked && clockTimer !== null && clockTimer > 0 && (
+                    <div className="px-4 py-2 bg-gray-400 text-white rounded-lg font-semibold text-sm cursor-not-allowed">
+                      ⏰ Clock Active ({clockTimer}s)
+                    </div>
                   )}
                 </div>
               </div>
