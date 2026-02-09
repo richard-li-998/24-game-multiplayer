@@ -1,9 +1,31 @@
-import React, { useState, useEffect } from 'react';
-import { Shuffle, Trophy, Users, Clock, Copy, Check, Link as LinkIcon } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { database } from './firebase';
-import { ref, set, onValue, update } from 'firebase/database';
+import { ref, set, onValue, update, get, onDisconnect } from 'firebase/database';
 
 const EPSILON = 0.001;
+
+// Game constants
+const CLOCK_DURATION = 60;
+const COPY_FEEDBACK_DURATION = 2000;
+const FIREBASE_SYNC_DELAY = 800;
+const MAX_PLAYER_NAME_LENGTH = 30;
+const MAX_CARD_GENERATION_ATTEMPTS = 100;
+const ROOM_CODE_LENGTH = 6;
+
+// Validation helpers
+const validatePlayerName = (name) => {
+  const trimmed = name.trim();
+  if (!trimmed) return { valid: false, error: 'Please enter your name' };
+  if (trimmed.length > MAX_PLAYER_NAME_LENGTH) return { valid: false, error: `Max ${MAX_PLAYER_NAME_LENGTH} characters` };
+  if (!/^[a-zA-Z0-9 '-]+$/.test(trimmed)) return { valid: false, error: 'Only letters, numbers, spaces, hyphens allowed' };
+  return { valid: true, name: trimmed };
+};
+
+const validateRoomCode = (code) => {
+  const cleaned = code.trim().toUpperCase();
+  if (!/^[A-Z0-9]{6}$/.test(cleaned)) return { valid: false, error: 'Invalid room code' };
+  return { valid: true, code: cleaned };
+};
 
 // Card value mapping
 const CARD_VALUES = {
@@ -60,9 +82,8 @@ function canMake24(cards) {
 // Generate random cards with suits
 function generateCards() {
   let attempts = 0;
-  const maxAttempts = 100;
-  
-  while (attempts < maxAttempts) {
+
+  while (attempts < MAX_CARD_GENERATION_ATTEMPTS) {
     const cards = [];
     for (let i = 0; i < 4; i++) {
       const randomRank = CARD_NAMES[Math.floor(Math.random() * CARD_NAMES.length)];
@@ -111,35 +132,34 @@ function toFraction(decimal) {
 }
 
 function PlayingCard({ card, isSelected, onClick, disabled }) {
-  const isResult = !card.isOriginal;
   const displayValue = card.rank;
-  
+
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`relative aspect-[2/3] rounded-lg border-2 bg-white flex flex-col items-center justify-center transition-all transform hover:scale-105 shadow-lg ${
+      className={`relative aspect-[2/3] rounded-lg border-2 bg-white flex flex-col items-center justify-center transition-all shadow-sm ${
         isSelected
-          ? 'border-blue-600 ring-4 ring-blue-300 scale-105'
-          : 'border-gray-400 hover:border-gray-600'
-      } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+          ? 'border-black ring-2 ring-gray-400'
+          : 'border-gray-500 hover:border-gray-700'
+      } ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
     >
       {card.isOriginal ? (
         <>
-          <div className={`absolute top-2 left-2 flex flex-col items-center leading-none ${SUIT_COLORS[card.suit]}`}>
-            <div className="text-2xl font-bold">{card.rank}</div>
-            <div className="text-xl">{card.suit}</div>
+          <div className={`absolute top-1.5 left-2 flex flex-col items-center leading-none ${SUIT_COLORS[card.suit]}`}>
+            <div className="text-lg font-medium">{card.rank}</div>
+            <div className="text-sm">{card.suit}</div>
           </div>
-          <div className={`text-6xl ${SUIT_COLORS[card.suit]}`}>
+          <div className={`text-5xl ${SUIT_COLORS[card.suit]}`}>
             {card.suit}
           </div>
-          <div className={`absolute bottom-2 right-2 flex flex-col items-center leading-none rotate-180 ${SUIT_COLORS[card.suit]}`}>
-            <div className="text-2xl font-bold">{card.rank}</div>
-            <div className="text-xl">{card.suit}</div>
+          <div className={`absolute bottom-1.5 right-2 flex flex-col items-center leading-none rotate-180 ${SUIT_COLORS[card.suit]}`}>
+            <div className="text-lg font-medium">{card.rank}</div>
+            <div className="text-sm">{card.suit}</div>
           </div>
         </>
       ) : (
-        <div className="text-3xl font-bold text-purple-700">
+        <div className="text-2xl font-medium text-gray-700">
           {displayValue}
         </div>
       )}
@@ -153,7 +173,6 @@ function TwentyFourGame() {
   const [roomId, setRoomId] = useState(null);
   const [playerId, setPlayerId] = useState(null);
   const [playerName, setPlayerName] = useState('');
-  const [playerLimit, setPlayerLimit] = useState(2); // Host chooses 2-6
   const [cards, setCards] = useState([]); // Local card state
   const [originalCards, setOriginalCards] = useState([]); // Original cards for reset
   const [selectedCard, setSelectedCard] = useState(null);
@@ -174,6 +193,17 @@ function TwentyFourGame() {
   // Single player specific states
   const [singlePlayerScore, setSinglePlayerScore] = useState(0);
   const [singlePlayerBestTime, setSinglePlayerBestTime] = useState(null);
+
+  // Loading state
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Memoized player lists
+  const sortedPlayers = useMemo(() =>
+    Object.values(roomData?.players || {})
+      .sort((a, b) => (b.score || 0) - (a.score || 0)),
+    [roomData?.players]
+  );
+
 
   useEffect(() => {
     document.title = '24';
@@ -237,20 +267,17 @@ function TwentyFourGame() {
       const unsubscribe = onValue(roomRef, (snapshot) => {
         const data = snapshot.val();
         if (data) {
-          setRoomData(data);
-          
-          // Check if I was kicked
-          if (data.players && !data.players[playerId]) {
-            alert('You were removed from the room');
-            setGameState('setup');
-            setRoomId(null);
-            return;
-          }
-          
-          // Only set initial cards when game starts or new round
-          if (data.gameStarted && (cards.length === 0 || data.roundNumber !== roomData?.roundNumber)) {
-            // Don't update cards if sitting out
-            if (!isSittingOut) {
+          setRoomData(prev => {
+            // Check if I was kicked
+            if (data.players && !data.players[playerId]) {
+              setMessage('❌ You were removed from the room');
+              setGameState('setup');
+              setRoomId(null);
+              return null;
+            }
+
+            // Only set initial cards when game starts or new round
+            if (data.gameStarted && (!prev?.gameStarted || data.roundNumber !== prev?.roundNumber)) {
               setCards(data.originalCards || []);
               setOriginalCards(data.originalCards || []);
               setMoveHistory([]);
@@ -258,55 +285,66 @@ function TwentyFourGame() {
               setSelectedCard(null);
               setSelectedOperation(null);
               setIWon(false);
-              setMyReady(false); // Reset ready status
+              setMyReady(false);
               setWinner(null);
-              setClockTimer(null); // Reset clock timer for new round
+              setClockTimer(null);
             }
-          }
-          
-          // Check for winner
-          if (data.winner && !winner) {
-            setWinner(data.winner);
-            const winnerName = data.players[data.winner]?.name;
-            if (data.winner === playerId) {
-              setIWon(true);
-              setMessage(`🎉 You won!`);
-            } else {
-              setMessage(`${winnerName} won! Keep playing to finish.`);
+
+            // Check for winner
+            if (data.winner && !prev?.winner) {
+              setWinner(data.winner);
+              const winnerName = data.players[data.winner]?.name;
+              if (data.winner === playerId) {
+                setIWon(true);
+                setMessage('🎉 You won!');
+              } else {
+                setMessage(`${winnerName} won! Keep playing to finish.`);
+              }
             }
-          }
-          
-          // Show clock message if clocked and start countdown
-          if (data.clocked && !isSittingOut && clockTimer === null) {
-            setClockTimer(60);
-          }
-          
-          // Update message based on clock timer
-          if (clockTimer !== null && !isSittingOut) {
-            if (clockTimer > 0 && !iWon) {
-              setMessage(`⏰ You've been clocked! ${clockTimer} seconds to finish!`);
-            } else if (clockTimer === 0 && !iWon) {
-              setMessage(`⏰ Time's up! Game frozen - Click Ready to continue.`);
-            } else if (iWon && data.clocked) {
-              setMessage(`⏰ Clock active - waiting for other players to ready up.`);
+
+            // Show clock message if clocked and start countdown
+            if (data.clocked && !prev?.clocked) {
+              setClockTimer(CLOCK_DURATION);
             }
-          }
-          
-          if (data.gameStarted && gameState !== 'playing' && !winner) {
-            setGameState('playing');
-          }
+
+            if (data.gameStarted && !prev?.gameStarted) {
+              setGameState('playing');
+            }
+
+            return data;
+          });
         }
       });
 
       return () => unsubscribe();
     }
-  }, [roomId, gameMode, gameState, playerId, cards.length, winner, iWon, isSittingOut, myReady, clockTimer]);
+  }, [roomId, gameMode, playerId]);
+
+  // Set up disconnect handler to save score and remove player
+  useEffect(() => {
+    if (roomId && gameMode === 'multi' && playerId && roomData?.players?.[playerId]) {
+      const playerRef = ref(database, `rooms/${roomId}/players/${playerId}`);
+      const currentPlayer = roomData.players[playerId];
+
+      // On disconnect: save score to history, then remove player
+      const scoreHistoryRef = ref(database, `rooms/${roomId}/scoreHistory/${currentPlayer.name}`);
+      onDisconnect(scoreHistoryRef).set(currentPlayer.score || 0);
+      onDisconnect(playerRef).remove();
+
+      // Cleanup: cancel onDisconnect when effect re-runs or unmounts
+      return () => {
+        onDisconnect(scoreHistoryRef).cancel();
+        onDisconnect(playerRef).cancel();
+      };
+    }
+  }, [roomId, gameMode, playerId, roomData?.players]);
 
   // Auto-check if all players are ready when roomData changes
   useEffect(() => {
     if (roomData && winner && roomData.players) {
       checkAndStartNextRound();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomData?.players, winner]);
 
   // Single player timer effect
@@ -366,77 +404,88 @@ function TwentyFourGame() {
   };
 
   const createRoom = async () => {
-    if (!playerName.trim()) {
-      alert('Please enter your name!');
+    const validation = validatePlayerName(playerName);
+    if (!validation.valid) {
+      setMessage(`❌ ${validation.error}`);
       return;
     }
 
-    setGameMode('multi');
-    const newRoomId = Math.random().toString(36).substr(2, 6).toUpperCase();
-    setRoomId(newRoomId);
+    setIsLoading(true);
+    setMessage('⏳ Creating room...');
 
-    const newCards = generateCards();
-    const roomRef = ref(database, `rooms/${newRoomId}`);
-    
-    await set(roomRef, {
-      host: playerId,
-      playerLimit: playerLimit,
-      players: {
-        [playerId]: { 
-          id: playerId, 
-          name: playerName, 
-          score: 0, 
-          ready: false,
-          sittingOut: false,
-          joinedAt: Date.now()
-        }
-      },
-      originalCards: newCards,
-      gameStarted: false,
-      winner: null,
-      roundNumber: 1,
-      clocked: false,
-      createdAt: Date.now()
-    });
+    try {
+      const newRoomId = Math.random().toString(36).substr(2, ROOM_CODE_LENGTH).toUpperCase();
+      const newCards = generateCards();
+      const roomRef = ref(database, `rooms/${newRoomId}`);
 
-    setGameState('waiting');
+      await set(roomRef, {
+        host: playerId,
+        players: {
+          [playerId]: {
+            id: playerId,
+            name: validation.name,
+            score: 0,
+            ready: false,
+            sittingOut: false,
+            joinedAt: Date.now()
+          }
+        },
+        originalCards: newCards,
+        gameStarted: false,
+        winner: null,
+        roundNumber: 1,
+        clocked: false,
+        createdAt: Date.now()
+      });
+
+      setGameMode('multi');
+      setRoomId(newRoomId);
+      setGameState('waiting');
+      setMessage('');
+    } catch (error) {
+      console.error('Create room error:', error);
+      setMessage('❌ Failed to create room. Check your connection.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const joinRoom = async () => {
-    if (!playerName.trim()) {
-      alert('Please enter your name!');
+    const nameValidation = validatePlayerName(playerName);
+    if (!nameValidation.valid) {
+      setMessage(`❌ ${nameValidation.error}`);
       return;
     }
 
-    if (!joinRoomId.trim()) {
-      alert('Please enter a room code!');
+    const roomValidation = validateRoomCode(joinRoomId);
+    if (!roomValidation.valid) {
+      setMessage(`❌ ${roomValidation.error}`);
       return;
     }
 
-    setGameMode('multi');
-    const roomRef = ref(database, `rooms/${joinRoomId.toUpperCase()}`);
-    
-    // Check if room exists
-    onValue(roomRef, async (snapshot) => {
+    setMessage('⏳ Joining room...');
+
+    try {
+      const roomRef = ref(database, `rooms/${roomValidation.code}`);
+      const snapshot = await get(roomRef);
       const data = snapshot.val();
+
       if (!data) {
-        alert('Room not found!');
+        setMessage('❌ Room not found!');
         return;
       }
 
-      const playerCount = Object.keys(data.players || {}).length;
-      if (playerCount >= data.playerLimit) {
-        alert(`Room is full! (${data.playerLimit} players max)`);
-        return;
-      }
+      // Restore score if player was in this room before
+      const previousScore = data.scoreHistory?.[nameValidation.name] || 0;
 
-      setRoomId(joinRoomId.toUpperCase());
-      
+      setGameMode('multi');
+      setRoomId(roomValidation.code);
+
       await update(roomRef, {
-        [`players/${playerId}`]: { 
-          id: playerId, 
-          name: playerName, 
-          score: 0, 
+        [`players/${playerId}`]: {
+          id: playerId,
+          name: nameValidation.name,
+          score: previousScore,
           ready: false,
           sittingOut: false,
           joinedAt: Date.now()
@@ -445,7 +494,11 @@ function TwentyFourGame() {
       });
 
       setGameState('playing');
-    }, { onlyOnce: true });
+      setMessage('');
+    } catch (error) {
+      console.error('Join room error:', error);
+      setMessage('❌ Failed to join room. Check your connection.');
+    }
   };
 
   const copyRoomLink = () => {
@@ -601,20 +654,25 @@ function TwentyFourGame() {
         } else {
           // Multiplayer win
           const roomRef = ref(database, `rooms/${roomId}`);
-          
+
           // Check if someone already won
           if (!winner) {
-            const newScore = (roomData.players[playerId]?.score || 0) + 1;
-            
-            await update(roomRef, {
-              winner: playerId,
-              winTime: Date.now(),
-              [`players/${playerId}/score`]: newScore
-            });
-            setIWon(true);
-            setMessage('🎉 You won!');
+            try {
+              const newScore = (roomData.players[playerId]?.score || 0) + 1;
+
+              await update(roomRef, {
+                winner: playerId,
+                winTime: Date.now(),
+                [`players/${playerId}/score`]: newScore
+              });
+              setIWon(true);
+              setMessage('🎉 You won!');
+            } catch (error) {
+              console.error('Failed to record win:', error);
+              setMessage('❌ Error saving win. Please try again.');
+            }
           } else {
-            setMessage(`${roomData.players[winner]?.name} already won! But you finished!`);
+            setMessage(`${roomData?.players?.[winner]?.name || 'Someone'} already won! But you finished!`);
           }
         }
       } else {
@@ -663,112 +721,110 @@ function TwentyFourGame() {
     }
   };
 
-  const clockOpponent = async () => {
-    if (!iWon || !roomData) return;
-    
-    const roomRef = ref(database, `rooms/${roomId}`);
-    await update(roomRef, {
-      clocked: true
-    });
-    
-    setMessage('⏰ All players clocked!');
-  };
-
   const kickPlayer = async (targetPlayerId) => {
     if (roomData?.host !== playerId) return;
-    if (targetPlayerId === playerId) return; // Can't kick yourself
-    
-    const roomRef = ref(database, `rooms/${roomId}`);
-    await update(roomRef, {
-      [`players/${targetPlayerId}`]: null
-    });
+    if (targetPlayerId === playerId) return;
+
+    try {
+      const roomRef = ref(database, `rooms/${roomId}`);
+      await update(roomRef, { [`players/${targetPlayerId}`]: null });
+    } catch (error) {
+      console.error('Failed to kick player:', error);
+      setMessage('❌ Failed to kick player. Try again.');
+    }
   };
 
   const toggleSitOut = async () => {
     if (!roomId) return;
-    
+
     const newSitOutStatus = !isSittingOut;
-    setIsSittingOut(newSitOutStatus);
-    
-    const roomRef = ref(database, `rooms/${roomId}`);
-    await update(roomRef, {
-      [`players/${playerId}/sittingOut`]: newSitOutStatus
-    });
-    
-    if (newSitOutStatus) {
-      setMessage('Sitting out. Your score is saved!');
-    } else {
-      setMessage('Back in the game!');
-      // Reset board state for this player
-      if (roomData?.originalCards) {
-        setCards([...roomData.originalCards]);
-        setOriginalCards([...roomData.originalCards]);
-        setMoveHistory([]);
-        setCardHistory([]);
-        setSelectedCard(null);
-        setSelectedOperation(null);
+
+    try {
+      const roomRef = ref(database, `rooms/${roomId}`);
+      await update(roomRef, { [`players/${playerId}/sittingOut`]: newSitOutStatus });
+      setIsSittingOut(newSitOutStatus);
+
+      if (newSitOutStatus) {
+        setMessage('Sitting out. Your score is saved!');
+      } else {
+        setMessage('Back in the game!');
+        if (roomData?.originalCards) {
+          setCards([...roomData.originalCards]);
+          setOriginalCards([...roomData.originalCards]);
+          setMoveHistory([]);
+          setCardHistory([]);
+          setSelectedCard(null);
+          setSelectedOperation(null);
+        }
       }
+    } catch (error) {
+      console.error('Failed to toggle sit out:', error);
+      setMessage('❌ Failed to update status. Try again.');
     }
+  };
+
+  const startNewRound = async () => {
+    const newCards = generateCards();
+    const newRoundNumber = (roomData.roundNumber || 1) + 1;
+    const roomRef = ref(database, `rooms/${roomId}`);
+
+    const updates = {
+      originalCards: newCards,
+      winner: null,
+      clocked: false,
+      roundNumber: newRoundNumber
+    };
+
+    Object.keys(roomData.players).forEach(pid => {
+      updates[`players/${pid}/ready`] = false;
+    });
+
+    await update(roomRef, updates);
   };
 
   const checkAndStartNextRound = async () => {
     if (!roomData || !roomData.players) return;
-    
+
     const activePlayers = Object.values(roomData.players).filter(p => !p.sittingOut);
-    const activePlayerCount = activePlayers.length;
     const readyCount = activePlayers.filter(p => p.ready).length;
-    
-    console.log(`Ready check: ${readyCount}/${activePlayerCount} players ready`);
-    
-    if (readyCount === activePlayerCount && activePlayerCount > 0) {
-      console.log('All players ready!');
-      
-      // Only the host should generate new cards
-      const isHost = roomData.host === playerId;
-      
-      if (isHost) {
-        console.log('I am host - generating new cards and starting new round...');
-        
-        const newCards = generateCards();
-        const newRoundNumber = (roomData.roundNumber || 1) + 1;
-        const roomRef = ref(database, `rooms/${roomId}`);
-        
-        // Reset all players' ready status and game state
-        const updates = {
-          originalCards: newCards,
-          winner: null,
-          clocked: false,
-          roundNumber: newRoundNumber
-        };
-        
-        Object.keys(roomData.players).forEach(pid => {
-          updates[`players/${pid}/ready`] = false;
-        });
-        
-        await update(roomRef, updates);
-        console.log('New round started!');
-      } else {
-        console.log('Waiting for host to start new round...');
+
+    if (readyCount === activePlayers.length && activePlayers.length > 0 && roomData.host === playerId) {
+      try {
+        await startNewRound();
+      } catch (error) {
+        console.error('Failed to start next round:', error);
+        setMessage('Failed to start next round.');
       }
     }
   };
 
   const readyUp = async () => {
     if (!roomId || !roomData || isSittingOut) return;
-    
-    console.log('Ready up clicked!');
-    setMyReady(true);
-    const roomRef = ref(database, `rooms/${roomId}`);
-    
-    await update(roomRef, {
-      [`players/${playerId}/ready`]: true
-    });
-    
-    console.log('Ready status updated in Firebase');
-    setMessage('Ready! Waiting for other players...');
-    
-    // Check if all active players are ready after a short delay to let Firebase sync
-    setTimeout(() => checkAndStartNextRound(), 800);
+
+    try {
+      setMyReady(true);
+      const roomRef = ref(database, `rooms/${roomId}`);
+
+      await update(roomRef, { [`players/${playerId}/ready`]: true });
+      setMessage('Ready! Waiting for other players...');
+
+      setTimeout(() => checkAndStartNextRound(), FIREBASE_SYNC_DELAY);
+    } catch (error) {
+      console.error('Failed to ready up:', error);
+      setMyReady(false);
+      setMessage('Failed to ready up.');
+    }
+  };
+
+  const skipToNextRound = async () => {
+    if (!iWon || clockTimer !== 0 || !roomData) return;
+
+    try {
+      await startNewRound();
+    } catch (error) {
+      console.error('Failed to skip round:', error);
+      setMessage('Failed to skip round.');
+    }
   };
 
   const formatTime = (seconds) => {
@@ -778,666 +834,420 @@ function TwentyFourGame() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-8">
-      <div className="max-w-4xl mx-auto">
-        <div className="text-center mb-8">
-          <h1 className="text-6xl font-bold text-gray-800 mb-2">24 Game</h1>
-          <p className="text-gray-600 text-lg">
-            {gameMode === 'single' ? 'Single Player - Beat your best time!' : gameMode === 'multi' ? 'Multiplayer - Race to 24!' : 'Choose your mode!'}
-          </p>
+    <div className="min-h-screen bg-white p-4">
+      <div className="max-w-2xl mx-auto">
+        <div className="text-center mb-4">
+          <h1 className="text-3xl font-semibold text-gray-900">24</h1>
         </div>
 
         {/* Mode Selection */}
         {!gameMode && gameState === 'setup' && (
-          <div className="bg-white rounded-2xl shadow-xl p-12">
-            <h2 className="text-3xl font-bold text-gray-800 mb-8 text-center">Choose Game Mode</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <button
-                onClick={() => {
-                  setGameMode('single');
-                  startSinglePlayerGame();
-                }}
-                className="p-8 bg-gradient-to-br from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white rounded-2xl shadow-lg transform hover:scale-105 transition"
-              >
-                <Trophy className="w-16 h-16 mx-auto mb-4" />
-                <h3 className="text-2xl font-bold mb-2">Single Player</h3>
-                <p className="text-purple-100">Practice alone and beat your best time!</p>
-              </button>
-              <button
-                onClick={() => setGameMode('multi')}
-                className="p-8 bg-gradient-to-br from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white rounded-2xl shadow-lg transform hover:scale-105 transition"
-              >
-                <Users className="w-16 h-16 mx-auto mb-4" />
-                <h3 className="text-2xl font-bold mb-2">Multiplayer</h3>
-                <p className="text-blue-100">Race against friends online!</p>
-              </button>
-            </div>
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={() => {
+                setGameMode('single');
+                startSinglePlayerGame();
+              }}
+              className="px-6 py-3 border border-gray-300 hover:border-gray-900 hover:bg-gray-50 rounded text-gray-700 hover:text-gray-900 transition"
+            >
+              Solo
+            </button>
+            <button
+              onClick={() => setGameMode('multi')}
+              className="px-6 py-3 border border-gray-300 hover:border-gray-900 hover:bg-gray-50 rounded text-gray-700 hover:text-gray-900 transition"
+            >
+              Multiplayer
+            </button>
           </div>
         )}
 
         {gameMode === 'multi' && gameState === 'setup' && (
-          <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
-            <Users className="w-24 h-24 mx-auto text-blue-600 mb-4" />
-            <h2 className="text-3xl font-bold text-gray-800 mb-4">Create or Join Game</h2>
-            <div className="space-y-4 max-w-md mx-auto mb-8">
-              <input
-                type="text"
-                placeholder="Enter your name"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
-              />
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Player Limit (for new rooms)
-                </label>
-                <select
-                  value={playerLimit}
-                  onChange={(e) => setPlayerLimit(parseInt(e.target.value))}
-                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg bg-white"
-                >
-                  <option value={2}>2 Players</option>
-                  <option value={3}>3 Players</option>
-                  <option value={4}>4 Players</option>
-                  <option value={5}>5 Players</option>
-                  <option value={6}>6 Players</option>
-                </select>
-              </div>
-            </div>
-            <div className="flex gap-4 justify-center">
+          <div className="space-y-4 max-w-sm mx-auto">
+            <input
+              type="text"
+              placeholder="Your name"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded focus:border-gray-900 focus:outline-none"
+            />
+            <div className="flex gap-2 justify-center pt-2">
               <button
                 onClick={() => setGameMode(null)}
-                className="bg-gray-500 hover:bg-gray-600 text-white px-6 py-4 rounded-xl text-xl font-bold shadow-lg transition"
+                className="px-4 py-2 text-gray-500 hover:text-gray-900 transition text-sm"
               >
                 ← Back
               </button>
               <button
                 onClick={createRoom}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
+                disabled={isLoading}
+                className="px-4 py-2 border border-gray-300 hover:border-gray-900 rounded transition text-sm disabled:opacity-50"
               >
-                Create Room
+                {isLoading ? 'Creating...' : 'Create'}
               </button>
               <button
                 onClick={() => setGameState('join')}
-                className="bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
+                disabled={isLoading}
+                className="px-4 py-2 border border-gray-300 hover:border-gray-900 rounded transition text-sm disabled:opacity-50"
               >
-                Join Room
+                Join
               </button>
             </div>
           </div>
         )}
 
         {gameState === 'join' && (
-          <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
-            <LinkIcon className="w-24 h-24 mx-auto text-green-600 mb-4" />
-            <h2 className="text-3xl font-bold text-gray-800 mb-4">Join a Room</h2>
-            <div className="space-y-4 max-w-md mx-auto mb-8">
-              <input
-                type="text"
-                placeholder="Enter your name"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
-              />
-              <input
-                type="text"
-                placeholder="Enter room code"
-                value={joinRoomId}
-                onChange={(e) => setJoinRoomId(e.target.value.toUpperCase())}
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-green-500 focus:outline-none text-lg font-mono"
-              />
-            </div>
-            <div className="flex gap-4 justify-center">
+          <div className="space-y-3 max-w-sm mx-auto">
+            <input
+              type="text"
+              placeholder="Your name"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded focus:border-gray-900 focus:outline-none"
+            />
+            <input
+              type="text"
+              placeholder="Room code"
+              value={joinRoomId}
+              onChange={(e) => setJoinRoomId(e.target.value.toUpperCase())}
+              className="w-full px-3 py-2 border border-gray-300 rounded focus:border-gray-900 focus:outline-none font-mono"
+            />
+            <div className="flex gap-2 justify-center pt-2">
               <button
                 onClick={() => {
                   setGameState('setup');
                   setGameMode(null);
                 }}
-                className="bg-gray-500 hover:bg-gray-600 text-white px-8 py-4 rounded-xl text-xl font-bold shadow-lg transition"
+                className="px-4 py-2 text-gray-500 hover:text-gray-900 transition text-sm"
               >
                 ← Back
               </button>
               <button
                 onClick={joinRoom}
-                className="bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
+                className="px-4 py-2 border border-gray-300 hover:border-gray-900 rounded transition text-sm"
               >
-                Join Game
+                Join
               </button>
             </div>
           </div>
         )}
 
         {gameState === 'waiting' && (
-          <div className="bg-white rounded-2xl shadow-xl p-12 text-center">
-            <Users className="w-24 h-24 mx-auto text-blue-600 mb-4 animate-pulse" />
-            <h2 className="text-3xl font-bold text-gray-800 mb-4">
-              Waiting for Players... ({Object.keys(roomData?.players || {}).length}/{roomData?.playerLimit})
-            </h2>
-            <p className="text-gray-600 mb-6">Room Code: <span className="font-mono font-bold text-2xl text-blue-600">{roomId}</span></p>
-            <div className="max-w-md mx-auto mb-6 p-4 bg-gray-50 rounded-lg">
-              <p className="text-sm text-gray-600 mb-2">Share this link with your friends:</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  readOnly
-                  value={`${window.location.origin}${window.location.pathname}?room=${roomId}`}
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono bg-white"
-                />
-                <button
-                  onClick={copyRoomLink}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition flex items-center gap-2"
-                >
-                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  {copied ? 'Copied!' : 'Copy'}
-                </button>
-              </div>
+          <div className="space-y-4 max-w-sm mx-auto text-center">
+            <div className="text-sm text-gray-500">
+              {Object.keys(roomData?.players || {}).length} players
             </div>
-            <div className="text-gray-500 mb-6">
-              <p className="mb-2 font-semibold">Players in room:</p>
-              {roomData?.players && Object.values(roomData.players).map((player, idx) => (
-                <p key={player.id} className="font-semibold text-gray-700">
-                  ✓ {player.name} {player.id === playerId && '(You)'}
-                </p>
+            <div className="font-mono text-2xl tracking-wider">{roomId}</div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                readOnly
+                value={`${window.location.origin}${window.location.pathname}?room=${roomId}`}
+                className="flex-1 px-2 py-1 border border-gray-200 rounded text-xs font-mono text-gray-500"
+              />
+              <button
+                onClick={copyRoomLink}
+                className="px-3 py-1 text-xs border border-gray-300 hover:border-gray-900 rounded transition"
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <div className="text-sm text-gray-600 space-y-1">
+              {roomData?.players && Object.values(roomData.players).map((player) => (
+                <div key={player.id}>
+                  {player.name} {player.id === playerId && <span className="text-gray-400">(you)</span>}
+                </div>
               ))}
             </div>
-            {roomData?.host === playerId && Object.keys(roomData?.players || {}).length >= 2 && (
+            <div className="flex gap-2 justify-center pt-2">
               <button
-                onClick={async () => {
-                  const roomRef = ref(database, `rooms/${roomId}`);
-                  await update(roomRef, { gameStarted: true });
+                onClick={() => {
+                  if (roomData?.host === playerId) {
+                    const roomRef = ref(database, `rooms/${roomId}`);
+                    set(roomRef, null);
+                  }
+                  setGameState('setup');
+                  setGameMode(null);
+                  setRoomId(null);
+                  setRoomData(null);
                 }}
-                className="bg-green-600 hover:bg-green-700 text-white px-8 py-4 rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
+                className="px-4 py-2 text-gray-500 hover:text-gray-900 transition text-sm"
               >
-                Start Game Now
+                Leave
               </button>
-            )}
-            <button
-              onClick={() => {
-                // Delete the room if you're the host, or just leave if you're not
-                if (roomData?.host === playerId) {
-                  const roomRef = ref(database, `rooms/${roomId}`);
-                  set(roomRef, null);
-                }
-                setGameState('setup');
-                setGameMode(null);
-                setRoomId(null);
-                setRoomData(null);
-              }}
-              className="mt-4 bg-gray-500 hover:bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold transition"
-            >
-              ← Cancel / Leave Room
-            </button>
+              {roomData?.host === playerId && Object.keys(roomData?.players || {}).length >= 2 && (
+                <button
+                  onClick={async () => {
+                    const roomRef = ref(database, `rooms/${roomId}`);
+                    await update(roomRef, { gameStarted: true });
+                  }}
+                  className="px-4 py-2 border border-gray-300 hover:border-gray-900 rounded transition text-sm"
+                >
+                  Start
+                </button>
+              )}
+            </div>
           </div>
         )}
 
         {/* Single Player Mode */}
         {gameMode === 'single' && gameState === 'playing' && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             {/* Game Info Bar */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <div className="flex justify-between items-center">
-                <div>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                      <Clock className="w-6 h-6 text-gray-600" />
-                      <span className="text-2xl font-mono font-bold">{formatTime(timer)}</span>
-                    </div>
-                    <div className="text-left">
-                      <div className="text-sm text-gray-600">Score</div>
-                      <div className="text-2xl font-bold text-purple-600">{singlePlayerScore}</div>
-                    </div>
-                    {singlePlayerBestTime !== null && (
-                      <div className="text-left">
-                        <div className="text-sm text-gray-600">Best Time</div>
-                        <div className="text-lg font-bold text-green-600">{formatTime(singlePlayerBestTime)}</div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <button
-                  onClick={backToMenu}
-                  className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-semibold transition"
-                >
-                  ← Back to Menu
-                </button>
+            <div className="flex justify-between items-center text-sm">
+              <div className="flex items-center gap-4">
+                <span className="font-mono">{formatTime(timer)}</span>
+                <span className="text-gray-500">Score: {singlePlayerScore}</span>
+                {singlePlayerBestTime !== null && (
+                  <span className="text-gray-400">Best: {formatTime(singlePlayerBestTime)}</span>
+                )}
               </div>
+              <button
+                onClick={backToMenu}
+                className="text-gray-500 hover:text-gray-900 transition"
+              >
+                ← Exit
+              </button>
             </div>
 
             {/* Winner Banner */}
             {winner && (
-              <div className="bg-gradient-to-r from-green-400 to-emerald-500 rounded-2xl shadow-xl p-8">
-                <div className="text-center">
-                  <Trophy className="w-20 h-20 mx-auto mb-4 text-yellow-300 fill-yellow-200" />
-                  <div className="text-3xl font-bold text-white mb-4">
-                    🎉 You Won!
-                  </div>
-                  <div className="text-xl text-green-100 mb-6">
-                    Time: {formatTime(timer)}
-                    {timer === singlePlayerBestTime && ' 🌟 New Record!'}
-                  </div>
-                  <button
-                    onClick={nextRoundSinglePlayer}
-                    className="px-8 py-4 bg-white hover:bg-gray-100 text-green-600 rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
-                  >
-                    Next Round
-                  </button>
-                </div>
+              <div className="text-center py-4 border-y border-gray-200">
+                <div className="text-lg mb-2">Solved in {formatTime(timer)}{timer === singlePlayerBestTime && ' — New best!'}</div>
+                <button
+                  onClick={nextRoundSinglePlayer}
+                  className="px-4 py-2 border border-gray-300 hover:border-gray-900 rounded transition text-sm"
+                >
+                  Next Round
+                </button>
               </div>
             )}
 
             {/* Cards Display */}
-            <div className="bg-white rounded-2xl shadow-xl p-8">
-              <h2 className="text-2xl font-bold text-center mb-6 text-gray-800">
-                {cards.length === 4 ? 'Starting Cards' : `${cards.length} Card${cards.length !== 1 ? 's' : ''} Remaining`}
-              </h2>
-              <div className="grid grid-cols-2 gap-6 max-w-md mx-auto mb-8">
-                {cards.map((card) => (
-                  <PlayingCard
-                    key={card.id}
-                    card={card}
-                    isSelected={selectedCard?.id === card.id}
-                    onClick={() => handleCardClick(card)}
-                    disabled={winner}
-                  />
-                ))}
-              </div>
-
-              {/* Operations */}
-              <div className="mb-6">
-                <h3 className="text-xl font-bold text-center mb-4 text-gray-800">
-                  {winner 
-                    ? 'Round Complete!' 
-                    : selectedCard 
-                    ? 'Choose Operation' 
-                    : 'Select a card first'}
-                </h3>
-                <div className="flex gap-4 justify-center mb-4">
-                  {['+', '-', '*', '/'].map(op => (
-                    <button
-                      key={op}
-                      onClick={() => handleOperationClick(op)}
-                      disabled={!selectedCard || winner}
-                      className={`w-16 h-16 bg-orange-500 hover:bg-orange-600 text-white text-3xl font-bold rounded-xl shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-110 transition ${
-                        selectedOperation === op ? 'ring-4 ring-orange-300 scale-110' : ''
-                      }`}
-                    >
-                      {op}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex gap-3 justify-center">
-                  <button
-                    onClick={undoLastMove}
-                    disabled={cardHistory.length === 0 || winner}
-                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm"
-                  >
-                    ↶ Undo
-                  </button>
-                  <button
-                    onClick={resetBoard}
-                    disabled={winner}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm"
-                  >
-                    🔄 Reset
-                  </button>
-                </div>
-              </div>
-
-              {/* Message Display */}
-              {message && (
-                <div className={`text-center text-lg font-semibold p-4 rounded-lg ${
-                  winner
-                    ? 'bg-green-100 text-green-800' 
-                    : message.includes('❌')
-                    ? 'bg-red-100 text-red-800'
-                    : 'bg-blue-100 text-blue-800'
-                }`}>
-                  {message}
-                </div>
-              )}
-
-              {/* Move History */}
-              {moveHistory.length > 0 && (
-                <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-                  <h4 className="font-bold text-gray-700 mb-2">Move History:</h4>
-                  <div className="space-y-1">
-                    {moveHistory.map((move, idx) => (
-                      <div key={idx} className="text-sm text-gray-600 font-mono">
-                        {idx + 1}. {move}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+            <div className="grid grid-cols-2 gap-4 max-w-xs mx-auto">
+              {cards.map((card) => (
+                <PlayingCard
+                  key={card.id}
+                  card={card}
+                  isSelected={selectedCard?.id === card.id}
+                  onClick={() => handleCardClick(card)}
+                  disabled={winner}
+                />
+              ))}
             </div>
 
-            {/* Game Rules */}
-            <div className="bg-white rounded-xl p-6 shadow-lg">
-              <h3 className="font-bold text-lg mb-3 text-gray-800">How to Play:</h3>
-              <ul className="space-y-2 text-gray-700">
-                <li>✓ Use all 4 cards exactly once to make 24</li>
-                <li>✓ Click card → operation → card to combine</li>
-                <li>✓ Selecting a different card/operation auto-switches</li>
-                <li>✓ Use 🔄 Reset to go back to original 4 cards</li>
-                <li>✓ Use ↶ Undo to reverse your last move</li>
-                <li>✓ Try to beat your best time!</li>
-              </ul>
+            {/* Operations */}
+            <div className="flex gap-2 justify-center">
+              {['+', '-', '×', '÷'].map((op, i) => (
+                <button
+                  key={op}
+                  onClick={() => handleOperationClick(['+', '-', '*', '/'][i])}
+                  disabled={!selectedCard || winner}
+                  className={`w-12 h-12 border rounded text-xl transition disabled:opacity-30 ${
+                    selectedOperation === ['+', '-', '*', '/'][i]
+                      ? 'border-gray-900 bg-gray-100'
+                      : 'border-gray-300 hover:border-gray-900'
+                  }`}
+                >
+                  {op}
+                </button>
+              ))}
             </div>
+
+            {/* Actions */}
+            <div className="flex gap-2 justify-center text-sm">
+              <button
+                onClick={undoLastMove}
+                disabled={cardHistory.length === 0 || winner}
+                className="px-3 py-1 text-gray-500 hover:text-gray-900 disabled:opacity-30 transition"
+              >
+                Undo
+              </button>
+              <button
+                onClick={resetBoard}
+                disabled={winner}
+                className="px-3 py-1 text-gray-500 hover:text-gray-900 disabled:opacity-30 transition"
+              >
+                Reset
+              </button>
+            </div>
+
+            {/* Message Display */}
+            {message && (
+              <div className={`text-center text-sm py-2 ${
+                message.includes('❌') ? 'text-red-600' : 'text-gray-600'
+              }`}>
+                {message}
+              </div>
+            )}
+
+            {/* Move History */}
+            {moveHistory.length > 0 && (
+              <div className="text-xs text-gray-400 text-center font-mono">
+                {moveHistory.join(' → ')}
+              </div>
+            )}
           </div>
         )}
 
         {(gameState === 'playing' || gameState === 'won') && gameMode === 'multi' && roomData && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             {/* Game Info Bar */}
-            <div className="bg-white rounded-xl shadow-lg p-4">
-              <div className="flex justify-between items-center mb-4">
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <Clock className="w-5 h-5 text-gray-600" />
-                    <span className="text-xl font-mono font-bold">{formatTime(timer)}</span>
-                  </div>
-                  {clockTimer !== null && clockTimer > 0 && (
-                    <div className={`flex items-center gap-2 px-4 py-1.5 rounded-lg border-2 ${
-                      clockTimer <= 10 
-                        ? 'bg-red-200 border-red-500 animate-pulse' 
-                        : 'bg-red-100 border-red-400'
-                    }`}>
-                      <span className={`font-bold text-xl ${
-                        clockTimer <= 10 ? 'text-red-700' : 'text-red-600'
-                      }`}>
-                        ⏰ {clockTimer}s
-                      </span>
-                    </div>
-                  )}
-                </div>
-                <div className="text-center">
-                  <div className="text-sm text-gray-600">Room Code</div>
-                  <div className="text-xl font-mono font-bold text-blue-600">{roomId}</div>
-                </div>
-                <button
-                  onClick={copyRoomLink}
-                  className="flex items-center gap-2 bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded-lg transition"
-                >
-                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  Share
-                </button>
+            <div className="flex justify-between items-center text-sm">
+              <div className="flex items-center gap-3">
+                <span className="font-mono">{formatTime(timer)}</span>
+                {clockTimer !== null && clockTimer > 0 && (
+                  <span className={`font-mono ${clockTimer <= 10 ? 'text-red-600' : 'text-orange-500'}`}>
+                    {clockTimer}s
+                  </span>
+                )}
               </div>
-
-              {/* Compact Player Cards - Sorted by Score */}
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                {Object.values(roomData.players || {})
-                  .sort((a, b) => (b.score || 0) - (a.score || 0))
-                  .map((player) => {
-                    const isMe = player.id === playerId;
-                    const isWinner = winner === player.id;
-                    const isHost = roomData.host === player.id;
-                    
-                    return (
-                      <div
-                        key={player.id}
-                        className={`relative p-3 rounded-lg border-2 transition-all ${
-                          isMe 
-                            ? 'border-blue-600 bg-blue-50 ring-2 ring-blue-300' 
-                            : isWinner
-                            ? 'border-green-600 bg-green-50'
-                            : 'border-gray-300 bg-white'
-                        }`}
-                      >
-                        {/* Winner Crown */}
-                        {isWinner && (
-                          <div className="absolute -top-3 -right-3">
-                            <Trophy className="w-6 h-6 text-yellow-500 fill-yellow-400" />
-                          </div>
-                        )}
-                        
-                        {/* Player Info */}
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="flex items-center gap-1">
-                            <span className={`font-bold text-sm truncate max-w-[100px] ${isMe ? 'text-blue-700' : 'text-gray-800'}`}>
-                              {player.name}
-                            </span>
-                            {isHost && <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">HOST</span>}
-                          </div>
-                          <span className={`text-2xl font-bold ${isMe ? 'text-blue-600' : 'text-gray-700'}`}>
-                            {player.score || 0}
-                          </span>
-                        </div>
-                        
-                        {/* Status Indicators */}
-                        <div className="flex items-center gap-2 text-xs">
-                          {player.sittingOut && (
-                            <span className="bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">Sitting Out</span>
-                          )}
-                          {player.ready && !player.sittingOut && (
-                            <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded">✓ Ready</span>
-                          )}
-                          {!player.ready && !player.sittingOut && winner && (
-                            <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded">Playing...</span>
-                          )}
-                          
-                          {/* Kick Button for Host */}
-                          {roomData.host === playerId && !isMe && (
-                            <button
-                              onClick={() => kickPlayer(player.id)}
-                              className="ml-auto text-red-600 hover:text-red-800 text-xs font-semibold"
-                            >
-                              Kick
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-              </div>
-
-              {/* Sit Out Button */}
-              <div className="mt-4 text-center">
-                <button
-                  onClick={toggleSitOut}
-                  className={`px-4 py-2 rounded-lg font-semibold text-sm transition ${
-                    isSittingOut
-                      ? 'bg-green-500 hover:bg-green-600 text-white'
-                      : 'bg-yellow-500 hover:bg-yellow-600 text-white'
-                  }`}
-                >
-                  {isSittingOut ? '↩️ Join Back In' : '⏸️ Sit Out'}
-                </button>
-              </div>
+              <span className="font-mono text-gray-400">{roomId}</span>
+              <button
+                onClick={copyRoomLink}
+                className="text-gray-500 hover:text-gray-900 transition"
+              >
+                {copied ? 'Copied' : 'Share'}
+              </button>
             </div>
 
-            {/* Ready Up Section - Between Player Cards and Game Board */}
+            {/* Players */}
+            <div className="flex flex-wrap gap-2 justify-center text-sm">
+              {sortedPlayers.map((player) => {
+                const isMe = player.id === playerId;
+                const isWinner = winner === player.id;
+
+                return (
+                  <div
+                    key={player.id}
+                    className={`px-3 py-1 rounded border ${
+                      isMe ? 'border-gray-900 bg-gray-50' : 'border-gray-200'
+                    }`}
+                  >
+                    <span className={isWinner ? 'font-semibold' : ''}>
+                      {player.name}
+                    </span>
+                    <span className="text-gray-400 ml-2">{player.score || 0}</span>
+                    {player.sittingOut && <span className="text-gray-400 ml-1">•</span>}
+                    {player.ready && winner && <span className="text-green-500 ml-1">✓</span>}
+                    {roomData.host === playerId && player.id !== playerId && (
+                      <button
+                        onClick={() => kickPlayer(player.id)}
+                        className="ml-2 text-gray-400 hover:text-red-500"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Sit Out */}
+            <div className="text-center">
+              <button
+                onClick={toggleSitOut}
+                className="text-xs text-gray-500 hover:text-gray-900 transition"
+              >
+                {isSittingOut ? 'Join back in' : 'Sit out'}
+              </button>
+            </div>
+
+            {/* Ready Up Section */}
             {(winner || clockTimer === 0) && (
-              <div className="p-6 bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl border-2 border-orange-300 shadow-lg">
-                <div className="text-center">
-                  <div className="text-xl font-bold text-orange-800 mb-4">
-                    {clockTimer === 0 
-                      ? "⏰ Time's Up! Game Frozen - Ready Up!" 
-                      : (roomData?.clocked && clockTimer !== null && clockTimer > 0)
-                      ? `⏰ Clock Running - ${clockTimer}s remaining` 
-                      : '🏁 Round Complete!'}
+              <div className="text-center py-3 border-y border-gray-200 space-y-2">
+                {clockTimer === 0 && !iWon && (
+                  <div className="text-sm text-gray-500">Time's up</div>
+                )}
+                {!isSittingOut && (
+                  <div className="flex gap-2 justify-center">
+                    {!(myReady || roomData?.players?.[playerId]?.ready) && (
+                      <button
+                        onClick={readyUp}
+                        className="px-4 py-2 border border-gray-300 hover:border-gray-900 rounded transition text-sm"
+                      >
+                        Ready
+                      </button>
+                    )}
+                    {iWon && clockTimer === 0 && (
+                      <button
+                        onClick={skipToNextRound}
+                        className="px-4 py-2 border border-gray-300 hover:border-gray-900 rounded transition text-sm"
+                      >
+                        Skip
+                      </button>
+                    )}
+                    {(myReady || roomData?.players?.[playerId]?.ready) && (
+                      <span className="text-sm text-gray-500">Waiting for others...</span>
+                    )}
                   </div>
-                  
-                  {/* Ready Status */}
-                  <div className="mb-4">
-                    <p className="text-sm text-gray-600 mb-2">Ready Status:</p>
-                    <div className="flex flex-wrap gap-2 justify-center">
-                      {Object.values(roomData.players || {})
-                        .filter(p => !p.sittingOut)
-                        .map(player => (
-                          <span 
-                            key={player.id}
-                            className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                              player.ready 
-                                ? 'bg-green-100 text-green-700' 
-                                : 'bg-gray-100 text-gray-600'
-                            }`}
-                          >
-                            {player.ready ? '✓' : '○'} {player.name}
-                          </span>
-                        ))
-                      }
-                    </div>
-                  </div>
-                  
-                  {isSittingOut ? (
-                    <div className="text-lg font-semibold text-gray-600">
-                      You're sitting out this round
-                    </div>
-                  ) : myReady || roomData?.players?.[playerId]?.ready ? (
-                    <div className="text-lg font-semibold text-green-600">
-                      ✓ Ready! Waiting for others...
-                    </div>
-                  ) : (
-                    <button
-                      onClick={readyUp}
-                      className="px-8 py-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white rounded-xl text-xl font-bold shadow-lg transform hover:scale-105 transition"
-                    >
-                      Ready for Next Round
-                    </button>
-                  )}
-                </div>
+                )}
               </div>
             )}
 
             {/* Cards Display */}
-            <div className="bg-white rounded-2xl shadow-xl p-8">
-              {isSittingOut && (
-                <div className="mb-6 p-4 bg-yellow-100 border-2 border-yellow-400 rounded-lg text-center">
-                  <p className="text-yellow-800 font-bold">You're sitting out. Click "Join Back In" to play!</p>
-                </div>
-              )}
-              
-              {clockTimer === 0 && !iWon && (
-                <div className="mb-6 p-4 bg-red-100 border-2 border-red-500 rounded-lg text-center">
-                  <p className="text-red-800 font-bold text-lg">🔒 Time's Up - Game Frozen!</p>
-                  <p className="text-red-700 text-sm mt-1">Click "Ready for Next Round" below to continue</p>
-                </div>
-              )}
-              
-              <h2 className="text-2xl font-bold text-center mb-6 text-gray-800">
-                {cards.length === 4 ? 'Starting Cards' : `${cards.length} Card${cards.length !== 1 ? 's' : ''} Remaining`}
-              </h2>
-              <div className="grid grid-cols-2 gap-6 max-w-md mx-auto mb-8">
-                {cards.map((card) => (
-                  <PlayingCard
-                    key={card.id}
-                    card={card}
-                    isSelected={selectedCard?.id === card.id}
-                    onClick={() => handleCardClick(card)}
-                    disabled={iWon || isSittingOut || clockTimer === 0}
-                  />
-                ))}
-              </div>
-
-              {/* Operations */}
-              <div className="mb-6">
-                <h3 className="text-xl font-bold text-center mb-4 text-gray-800">
-                  {clockTimer === 0
-                    ? '🔒 Game Frozen - Ready Up to Continue!' 
-                    : isSittingOut 
-                    ? 'Sitting Out' 
-                    : iWon 
-                    ? 'You already won!' 
-                    : winner 
-                    ? `${roomData.players[winner]?.name} won! Keep playing to finish.` 
-                    : selectedCard 
-                    ? 'Choose Operation' 
-                    : 'Select a card first'}
-                </h3>
-                <div className="flex gap-4 justify-center mb-4">
-                  {['+', '-', '*', '/'].map(op => (
-                    <button
-                      key={op}
-                      onClick={() => handleOperationClick(op)}
-                      disabled={!selectedCard || iWon || isSittingOut || clockTimer === 0}
-                      className={`w-16 h-16 bg-orange-500 hover:bg-orange-600 text-white text-3xl font-bold rounded-xl shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transform hover:scale-110 transition ${
-                        selectedOperation === op ? 'ring-4 ring-orange-300 scale-110' : ''
-                      }`}
-                    >
-                      {op}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex gap-3 justify-center">
-                  <button
-                    onClick={undoLastMove}
-                    disabled={cardHistory.length === 0 || iWon || isSittingOut || clockTimer === 0}
-                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm"
-                  >
-                    ↶ Undo
-                  </button>
-                  <button
-                    onClick={resetBoard}
-                    disabled={iWon || isSittingOut || clockTimer === 0}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg text-sm"
-                  >
-                    🔄 Reset
-                  </button>
-                  {iWon && !roomData?.clocked && (
-                    <button
-                      onClick={clockOpponent}
-                      className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold transition shadow-lg text-sm"
-                    >
-                      ⏰ Clock All Players
-                    </button>
-                  )}
-                  {iWon && roomData?.clocked && clockTimer !== null && clockTimer > 0 && (
-                    <div className="px-4 py-2 bg-gray-400 text-white rounded-lg font-semibold text-sm cursor-not-allowed">
-                      ⏰ Clock Active ({clockTimer}s)
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Message Display */}
-              {message && (
-                <div className={`text-center text-lg font-semibold p-4 rounded-lg ${
-                  iWon
-                    ? 'bg-green-100 text-green-800' 
-                    : message.includes('❌')
-                    ? 'bg-red-100 text-red-800'
-                    : 'bg-blue-100 text-blue-800'
-                }`}>
-                  {message}
-                </div>
-              )}
-
-              {/* Move History */}
-              {moveHistory.length > 0 && (
-                <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-                  <h4 className="font-bold text-gray-700 mb-2">Your Move History:</h4>
-                  <div className="space-y-1">
-                    {moveHistory.map((move, idx) => (
-                      <div key={idx} className="text-sm text-gray-600 font-mono">
-                        {idx + 1}. {move}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+            <div className="grid grid-cols-2 gap-4 max-w-xs mx-auto">
+              {cards.map((card) => (
+                <PlayingCard
+                  key={card.id}
+                  card={card}
+                  isSelected={selectedCard?.id === card.id}
+                  onClick={() => handleCardClick(card)}
+                  disabled={winner || isSittingOut || clockTimer === 0}
+                />
+              ))}
             </div>
 
-            {/* Game Rules */}
-            <div className="bg-white rounded-xl p-6 shadow-lg">
-              <h3 className="font-bold text-lg mb-3 text-gray-800">How to Play (2-6 Players):</h3>
-              <ul className="space-y-2 text-gray-700">
-                <li>✓ All players get the same 4 cards each round</li>
-                <li>✓ Race to combine them into 24 first!</li>
-                <li>✓ Click card → operation → card to combine</li>
-                <li>✓ Selecting a different card/operation auto-switches</li>
-                <li>✓ Use 🔄 Reset to go back to original 4 cards</li>
-                <li>✓ Use ↶ Undo to reverse your last move</li>
-                <li>✓ First player to make 24 wins the round and gets +1 score!</li>
-                <li>✓ Winner can ⏰ Clock all players (starts 60-second countdown)</li>
-                <li>✓ Keep playing during countdown - race to finish!</li>
-                <li>✓ When timer hits 0, game freezes and you must ready up</li>
-                <li>✓ Use ⏸️ Sit Out to take a break (keeps your score)</li>
-                <li>✓ Host can kick AFK players</li>
-                <li>✓ Players can join anytime (up to room limit)</li>
-                <li>✓ All active players must ready up for next round</li>
-                <li>✓ Player cards sorted by score - your card is highlighted blue</li>
-              </ul>
+            {/* Operations */}
+            <div className="flex gap-2 justify-center">
+              {['+', '-', '×', '÷'].map((op, i) => (
+                <button
+                  key={op}
+                  onClick={() => handleOperationClick(['+', '-', '*', '/'][i])}
+                  disabled={!selectedCard || winner || isSittingOut || clockTimer === 0}
+                  className={`w-12 h-12 border rounded text-xl transition disabled:opacity-30 ${
+                    selectedOperation === ['+', '-', '*', '/'][i]
+                      ? 'border-gray-900 bg-gray-100'
+                      : 'border-gray-300 hover:border-gray-900'
+                  }`}
+                >
+                  {op}
+                </button>
+              ))}
             </div>
+
+            {/* Actions */}
+            <div className="flex gap-2 justify-center text-sm">
+              <button
+                onClick={undoLastMove}
+                disabled={cardHistory.length === 0 || winner || isSittingOut || clockTimer === 0}
+                className="px-3 py-1 text-gray-500 hover:text-gray-900 disabled:opacity-30 transition"
+              >
+                Undo
+              </button>
+              <button
+                onClick={resetBoard}
+                disabled={winner || isSittingOut || clockTimer === 0}
+                className="px-3 py-1 text-gray-500 hover:text-gray-900 disabled:opacity-30 transition"
+              >
+                Reset
+              </button>
+            </div>
+
+            {/* Message Display */}
+            {message && (
+              <div className={`text-center text-sm py-2 ${
+                message.includes('❌') ? 'text-red-600' : 'text-gray-600'
+              }`}>
+                {message}
+              </div>
+            )}
+
+            {/* Move History */}
+            {moveHistory.length > 0 && (
+              <div className="text-xs text-gray-400 text-center font-mono">
+                {moveHistory.join(' → ')}
+              </div>
+            )}
           </div>
         )}
       </div>
