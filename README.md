@@ -1,102 +1,83 @@
-# 🎮 24 Game - Multiplayer
+# 24 Game - Multiplayer
 
-A real-time multiplayer math card game where players race to combine four cards using basic operations (+, -, \*, /) to make 24!
+A real-time multiplayer math card game where players race to combine four cards using basic arithmetic operations (+, -, *, /) to reach exactly 24.
 
-**🔗 Live Demo:** [https://24-game-multiplayer.vercel.app/](https://24-game-multiplayer.vercel.app/)
-
----
-
-## 🎯 About The Game
-
-The 24 Game is a competitive multiplayer card game where 2-6 players:
-
-- Receive the same 4 random playing cards each round
-- Race to combine them using +, -, \*, / to make exactly 24
-- First player to solve it wins the round and earns a point
-- Winner can "clock" opponents with a 60-second countdown
-- Play multiple rounds and track scores across games
+**Live Demo:** [https://24-game-multiplayer.vercel.app/](https://24-game-multiplayer.vercel.app/)
 
 ---
 
-## ✨ Features
+## About
 
-### 🎲 Gameplay
+The 24 Game is a competitive card game for 2-6 players. Each round, all players receive the same four randomly generated playing cards and race to combine them using addition, subtraction, multiplication, and division to produce the number 24. The first player to find a valid solution wins the round and earns a point.
 
-- **Real-time multiplayer** - Play with 2-6 friends simultaneously
-- **Live sync** - All players see moves happen in real-time
+A single-player mode is also available for solo practice, with time tracking and a running score counter.
+
+---
+
+## Features
+
+### Gameplay
+
+- **Real-time multiplayer** - Play with 2-6 players simultaneously
+- **Single-player mode** - Practice solo with solvable puzzles and time tracking
+- **Live synchronization** - All players see game state updates instantly
 - **Score tracking** - Persistent scores across rounds
-- **Clock mechanic** - Winner can pressure opponents with a countdown timer
-- **Undo/Reset** - Fix mistakes with undo or reset to original cards
-- **Fraction display** - Division results shown as fractions (no decimals)
+- **Clock mechanic** - The round winner can start a 60-second countdown for remaining players
+- **Undo and reset** - Reverse your last move or return to the original four cards
+- **Fraction display** - Division results are shown as fractions, not decimals
 
-### 🎨 User Experience
+### User Experience
 
-- **Visual playing cards** - Realistic card designs with suits
-- **Drag-free selection** - Click card → operation → card to combine
-- **Sit-out feature** - Take breaks without losing your score
-- **Host controls** - Kick AFK players
-- **Join anytime** - Players can join mid-game (up to room limit)
-- **Sorted leaderboard** - Player cards ranked by score
+- **Visual playing cards** - Card designs with suits and colors
+- **Click-based selection** - Select a card, choose an operation, then select another card to combine
+- **Sit-out option** - Take a break between rounds without losing your score
+- **Host controls** - The room host can kick inactive players
+- **Mid-game joining** - Players can join a room at any point, up to the player limit
+- **Leaderboard** - Player list sorted by score
 
-### 🔒 Multiplayer Features
+### Multiplayer
 
-- **Room-based system** - Create private rooms with shareable links
-- **Player limit selection** - Host chooses 2-6 player capacity
-- **Ready-up system** - All active players must ready for next round
-- **Auto-start** - New round begins when all players are ready
-
----
-
-## 🛠️ Tech Stack
-
-### **Frontend**
-
-- **React** (v18) - Component-based UI framework
-- **Vite** - Fast build tool and dev server
-- **Tailwind CSS** - Utility-first CSS framework for styling
-- **Lucide React** - Icon library for UI elements
-
-### **Backend & Database**
-
-- **Firebase Realtime Database** - NoSQL cloud database for live data sync
-  - Real-time multiplayer synchronization
-  - Automatic client updates on data changes
-  - Persistent game state across sessions
-
-### **Deployment**
-
-- **Vercel** - Cloud platform for frontend hosting
-  - Automatic deployments from Git
-  - CDN for global performance
-  - Zero-config setup
-
-### **Core Libraries**
-
-```json
-{
-  "react": "^18.3.1",
-  "firebase": "^11.1.0",
-  "lucide-react": "^0.263.1"
-}
-```
+- **Room-based system** - Create private rooms with shareable links or room codes
+- **Player limit** - Host selects a capacity between 2 and 6 players
+- **Ready-up system** - All active players must ready up before the next round begins
+- **Auto-start** - A new round begins automatically when every player is ready
 
 ---
 
-## 🚀 Getting Started
+## Tech Stack
+
+### Frontend
+
+- **React** (v19) - Component-based UI framework
+- **Vite** - Build tool and development server
+- **Tailwind CSS** - Utility-first CSS framework
+- **Lucide React** - Icon library
+
+### Backend and Database
+
+- **Firebase Realtime Database** - NoSQL cloud database for live data synchronization, automatic client updates on data changes, and persistent game state
+
+### Deployment
+
+- **Vercel** - Frontend hosting with automatic deployments from Git
+
+---
+
+## Getting Started
 
 ### Prerequisites
 
 - Node.js (v16 or higher)
 - npm or yarn
-- Firebase account
+- A Firebase account
 
 ### Installation
 
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/24-game.git
-cd 24-game
+git clone https://github.com/YOUR-USERNAME/24-game-multiplayer.git
+cd 24-game-multiplayer
 ```
 
 2. **Install dependencies**
@@ -107,13 +88,13 @@ npm install
 
 3. **Set up Firebase**
 
-   - Create a Firebase project at [firebase.google.com](https://firebase.google.com)
-   - Enable Realtime Database
-   - Copy your Firebase config
+   - Create a project at [firebase.google.com](https://firebase.google.com)
+   - Enable the Realtime Database
+   - Copy your Firebase configuration
 
 4. **Configure Firebase**
 
-Update `src/firebase.js` with your config:
+Update `src/firebase.js` with your project credentials:
 
 ```javascript
 const firebaseConfig = {
@@ -130,7 +111,7 @@ const firebaseConfig = {
 
 5. **Set Firebase Database Rules**
 
-In Firebase Console → Realtime Database → Rules:
+In the Firebase Console, go to Realtime Database and then Rules:
 
 ```json
 {
@@ -156,7 +137,7 @@ In Firebase Console → Realtime Database → Rules:
 }
 ```
 
-6. **Run development server**
+6. **Run the development server**
 
 ```bash
 npm run dev
@@ -164,150 +145,120 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
+### Available Scripts
+
+- `npm run dev` - Start the development server
+- `npm run build` - Create a production build
+- `npm run preview` - Preview the production build locally
+- `npm run lint` - Run ESLint
+
 ---
 
-## 📦 Deployment
+## Deployment
 
 ### Deploy to Vercel
 
-1. **Push to GitHub**
+1. Push your code to GitHub.
 
-```bash
-git add .
-git commit -m "Initial commit"
-git push origin main
-```
+2. Go to [vercel.com](https://vercel.com), import your GitHub repository, and click Deploy. Vercel auto-detects the Vite configuration.
 
-2. **Connect to Vercel**
-
-   - Go to [vercel.com](https://vercel.com)
-   - Import your GitHub repository
-   - Vercel auto-detects Vite configuration
-   - Click "Deploy"
-
-3. **Automatic Deployments**
-   - Every push to `main` triggers a new deployment
-   - Preview deployments for pull requests
+3. Every push to `main` triggers a new deployment automatically.
 
 ---
 
-## 🎮 How to Play
+## How to Play
 
 ### Setup
 
-1. **Create a Room**
-
-   - Enter your name
-   - Choose player limit (2-6)
-   - Click "Create Room"
-
-2. **Invite Friends**
-   - Share the room link or room code
-   - Friends click the link or enter code to join
+1. Enter your name and choose a game mode (single-player or multiplayer).
+2. For multiplayer, create a room or join an existing one using a room code or link.
+3. The host waits for players to join, then all players ready up to begin.
 
 ### Gameplay
 
-1. **Study Your Cards** - All players see the same 4 cards
-2. **Combine Cards** - Click: Card → Operation → Card
-3. **Keep Combining** - Merge results until one card remains
-4. **Make 24** - First to reach exactly 24 wins!
+1. All players receive the same four cards.
+2. Select a card, pick an operation (+, -, *, /), then select a second card to combine them.
+3. Continue combining until one card remains.
+4. The first player to reach exactly 24 wins the round.
 
-### Game Controls
+### Controls
 
-- **🔄 Reset** - Return to original 4 cards
-- **↶ Undo** - Reverse your last move
-- **⏰ Clock** - Winner starts 60-second countdown for others
-- **⏸️ Sit Out** - Take a break (keeps your score)
+- **Reset** - Return to the original four cards
+- **Undo** - Reverse your last move
+- **Clock** - After winning, start a 60-second countdown for other players
+- **Sit Out** - Skip the current round while keeping your score
 
-### Winning
+### Scoring
 
-- First player to combine cards into 24 wins the round
-- Winner gets +1 point
-- Winner can clock other players
-- When clocked, game freezes at 0 seconds
-- All players ready up for next round
+- The first player to make 24 earns one point.
+- The winner may clock remaining players, freezing the game when the timer reaches zero.
+- All players ready up to start the next round.
 
 ---
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
-24-game/
+24-game-multiplayer/
 ├── src/
-│   ├── App.jsx              # Main game component with multiplayer logic
-│   ├── firebase.js          # Firebase configuration
-│   ├── main.jsx             # React entry point
-│   └── index.css            # Global styles
+│   ├── App.jsx            # Main game component with all game and multiplayer logic
+│   ├── firebase.js        # Firebase configuration and initialization
+│   ├── main.jsx           # React entry point
+│   ├── index.css          # Tailwind directives
+│   └── App.css            # Component styles
 ├── public/
+├── index.html
 ├── package.json
 ├── vite.config.js
+├── tailwind.config.js
+├── postcss.config.js
+├── eslint.config.js
 └── README.md
 ```
 
 ---
 
-## 🧮 Game Logic
+## Game Logic
 
 ### Card Validation
 
-- Uses recursive algorithm to verify if 4 cards can make 24
-- Tests all possible combinations and operations
-- Ensures generated puzzles are solvable
+A recursive algorithm tests all possible combinations of four cards and four operations to verify that each generated puzzle has at least one valid solution.
 
-### Real-time Sync
+### Real-time Synchronization
 
-- Firebase listeners update all clients instantly
-- Winner detection uses timestamp-based race condition handling
-- Only host generates new cards (prevents desyncs)
+Firebase listeners update all connected clients whenever room data changes. Winner detection uses timestamps to handle race conditions. Only the host generates new cards to prevent desynchronization.
 
-### Security
+### Data Validation
 
-- Firebase rules validate data types and ranges
-- Score manipulation prevented (scores only increase)
-- Player limit enforced server-side
-- Room creation throttled
+Firebase security rules enforce data types and value ranges. Scores are validated server-side, player limits are enforced per room, and player names are length-restricted.
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-Contributions are welcome! Feel free to:
-
-- Report bugs
-- Suggest new features
-- Submit pull requests
+Contributions are welcome. Feel free to report bugs, suggest features, or submit pull requests.
 
 ---
 
-## 📝 License
+## License
 
 This project is open source and available under the MIT License.
 
 ---
 
-## 🎯 Future Enhancements
+## Future Enhancements
 
-- [ ] Firebase Authentication for better security
-- [ ] Leaderboards across all rooms
-- [ ] Tournament mode
-- [ ] Custom difficulty levels
-- [ ] Mobile app version
-- [ ] Chat system
-- [ ] Replay mode to review solutions
-- [ ] Daily challenges
+- Firebase Authentication for improved security
+- Cross-room leaderboards
+- Tournament mode
+- Custom difficulty levels
+- Mobile application
+- In-game chat
+- Solution replay
+- Daily challenges
 
 ---
-
-## 👥 Credits
 
 Built with React, Firebase, and Tailwind CSS.
 
-**Play Now:** [https://24-game-multiplayer.vercel.app/](https://24-game-multiplayer.vercel.app/)
-
----
-
-## 📧 Contact
-
-For questions or feedback, please open an issue on GitHub.
-
-**Enjoy the game! 🎮**
+**Play now:** [https://24-game-multiplayer.vercel.app/](https://24-game-multiplayer.vercel.app/)
